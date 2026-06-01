@@ -1,0 +1,11 @@
+{
+  "name": "懂译 Knowly",
+  "description": "面向出海印尼中国人的 AI 双语翻译与生活工作私人助理",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
