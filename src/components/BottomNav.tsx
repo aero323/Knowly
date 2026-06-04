@@ -10,7 +10,7 @@ interface BottomNavProps {
 export function BottomNav({ currentTab, onChange }: BottomNavProps) {
   const tabs = [
     { id: 'translate', icon: Languages, label: '翻译' },
-    { id: 'calls', icon: Phone, label: '跨国通话' },
+    { id: 'calls', icon: Phone, label: 'AI通话' },
     { id: 'agent', icon: Bot, label: 'AI助理' },
     { id: 'profile', icon: User, label: '我的' },
   ] as const;
