@@ -1,4 +1,4 @@
-import { Languages, Phone, Bot, User } from 'lucide-react';
+import { Crown, Languages, Phone, User } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { TabType } from '@/types';
 
@@ -11,7 +11,7 @@ export function BottomNav({ currentTab, onChange }: BottomNavProps) {
   const tabs = [
     { id: 'translate', icon: Languages, label: '翻译' },
     { id: 'calls', icon: Phone, label: 'AI通话' },
-    { id: 'agent', icon: Bot, label: 'AI助理' },
+    { id: 'subscription', icon: Crown, label: '订阅' },
     { id: 'profile', icon: User, label: '我的' },
   ] as const;
 

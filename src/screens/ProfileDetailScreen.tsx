@@ -35,7 +35,6 @@ import type {
   IndustryContext,
   LanguageCode,
   ScenePrompt,
-  SimultaneousDirection,
   SourceLanguageCode,
   SubtitleSize,
   TermEntry,
@@ -92,16 +91,10 @@ const TARGET_LANGUAGE_OPTIONS: ChoiceOption<LanguageCode>[] = [
   { value: 'ja', label: '日语' },
 ];
 
-const DIRECTION_OPTIONS: ChoiceOption<SimultaneousDirection>[] = [
-  { value: 'id-to-zh', label: '印尼语 → 中文' },
-  { value: 'zh-to-id', label: '中文 → 印尼语' },
-  { value: 'auto', label: '自动识别' },
-];
-
 const FORMALITY_OPTIONS: ChoiceOption<TranslationFormality>[] = [
   { value: 'plain', label: '自然直译', description: '保留口语感' },
   { value: 'business', label: '商务正式', description: '默认推荐' },
-  { value: 'formal', label: '正式严谨', description: '适合合同和文件' },
+  { value: 'formal', label: '科学严谨', description: '适合合同和文件' },
 ];
 
 const SUBTITLE_SIZE_OPTIONS: ChoiceOption<SubtitleSize>[] = [
@@ -326,7 +319,6 @@ export function ProfileDetailScreen({
   const [feedbackType, setFeedbackType] = useState<FeedbackType>('translation');
   const [feedbackDescription, setFeedbackDescription] = useState('');
   const [feedbackAttachmentName, setFeedbackAttachmentName] = useState('');
-  const [includeRecentContext, setIncludeRecentContext] = useState(true);
   const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
   const meta = DETAIL_META[detail];
   const Icon = meta.icon;
@@ -400,7 +392,6 @@ export function ProfileDetailScreen({
     setFeedbackSubmitted(true);
     setFeedbackDescription('');
     setFeedbackAttachmentName('');
-    setIncludeRecentContext(true);
   }
 
   return (
@@ -411,7 +402,7 @@ export function ProfileDetailScreen({
         onBack={handleBack}
       />
       <div className="p-4 space-y-4">
-        {detail !== 'industry' && !activePrivacyDocument && (
+        {detail !== 'industry' && detail !== 'privacy' && detail !== 'help' && !activePrivacyDocument && (
           <section className="bg-white border border-gray-200 rounded-2xl p-4 flex items-start gap-3">
             <div className="w-10 h-10 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center">
               <Icon className="w-5 h-5" />
@@ -538,7 +529,7 @@ export function ProfileDetailScreen({
 
         {detail === 'general' && (
           <>
-            <SettingBlock title="默认语言与方向">
+            <SettingBlock title="默认语言">
               <section className="bg-white border border-gray-200 rounded-2xl p-4 space-y-4">
                 <div className="space-y-2">
                   <div className="flex items-center gap-2 text-sm font-semibold text-gray-950">
@@ -553,13 +544,6 @@ export function ProfileDetailScreen({
                     默认目标语言
                   </div>
                   <SelectField options={TARGET_LANGUAGE_OPTIONS} value={generalSettings.targetLanguage} onChange={updateTargetLanguage} />
-                </div>
-                <div className="space-y-2">
-                  <div className="flex items-center gap-2 text-sm font-semibold text-gray-950">
-                    <Headphones className="w-4 h-4 text-blue-600" />
-                    同声传译默认方向
-                  </div>
-                  <ChoiceGroup options={DIRECTION_OPTIONS} value={generalSettings.simultaneousDirection} onChange={(value) => updateSettings({ simultaneousDirection: value })} />
                 </div>
               </section>
             </SettingBlock>
@@ -601,14 +585,14 @@ export function ProfileDetailScreen({
             <SettingBlock title="历史记录">
               <SwitchRow
                 title="展示历史记录"
-                description="控制首页是否展示最近一次翻译纪要，不会删除任何记录。"
+                description="控制首页是否展示翻译纪要，不会删除任何记录。"
                 checked={generalSettings.showHistory}
                 onChange={(checked) => updateSettings({ showHistory: checked })}
               />
               <section className="bg-white border border-gray-200 rounded-2xl p-4 space-y-3">
                 <div className="flex items-center gap-2 text-sm font-semibold text-gray-950">
                   <FileText className="w-4 h-4 text-blue-600" />
-                  最近记录保留数量
+                  展示记录
                 </div>
                 <ChoiceGroup options={HISTORY_LIMIT_OPTIONS} value={generalSettings.historyLimit} onChange={(value) => updateSettings({ historyLimit: value })} />
               </section>
@@ -763,13 +747,6 @@ export function ProfileDetailScreen({
                     onChange={(event) => setFeedbackAttachmentName(event.target.files?.[0]?.name ?? '')}
                   />
                 </label>
-
-                <SwitchRow
-                  title="附带最近页面信息"
-                  description="帮助我们定位问题。当前原型只做本地 mock，不会真的上传。"
-                  checked={includeRecentContext}
-                  onChange={setIncludeRecentContext}
-                />
 
                 <button
                   type="button"

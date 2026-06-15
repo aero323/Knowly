@@ -24,18 +24,21 @@ import { motion } from 'motion/react';
 import { HoverNote } from '@/components/HoverNote';
 import { ScreenHeader } from '@/components/ScreenHeader';
 import { CONTACTS, SCENE_SCRIPTS, makeSummary } from '@/data/mockData';
-import type { CallSession, ConversationTurn } from '@/types';
+import { applyTranslationMemory } from '@/lib/translationMemory';
+import type { CallSession, ConversationTurn, TranslationMemoryEntry } from '@/types';
 
 interface CallLobbyScreenProps {
   mode: 'video' | 'voice' | 'join' | 'contact';
   code?: string;
   contactId?: string;
+  translationMemory: TranslationMemoryEntry[];
   onBack: () => void;
   onEnterRoom: (call: CallSession) => void;
 }
 
 interface CallRoomScreenProps {
   call: CallSession;
+  translationMemory: TranslationMemoryEntry[];
   onBack: () => void;
   onEndCall: (call: CallSession) => void;
 }
@@ -105,7 +108,7 @@ function formatDuration(seconds: number) {
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
 
-export function CallLobbyScreen({ mode, code = '7A3-K9W', contactId, onBack, onEnterRoom }: CallLobbyScreenProps) {
+export function CallLobbyScreen({ mode, code = '7A3-K9W', contactId, translationMemory, onBack, onEnterRoom }: CallLobbyScreenProps) {
   const contact = CONTACTS.find((item) => item.id === contactId);
   const callMode = mode === 'voice' ? 'voice' : 'video';
   const isVideo = callMode === 'video';
@@ -117,7 +120,7 @@ export function CallLobbyScreen({ mode, code = '7A3-K9W', contactId, onBack, onE
   const [isAppQrOpen, setIsAppQrOpen] = useState(false);
 
   const startCall = useCallback(() => {
-    const turns = SCENE_SCRIPTS.meeting;
+    const turns = SCENE_SCRIPTS.meeting.map((turn) => applyTranslationMemory(turn, translationMemory));
     onEnterRoom({
       id: `call-${Date.now()}`,
       mode: callMode,
@@ -127,7 +130,7 @@ export function CallLobbyScreen({ mode, code = '7A3-K9W', contactId, onBack, onE
       startedAt: new Date().toISOString(),
       turns,
     });
-  }, [callMode, code, contactId, onEnterRoom, waitingPerson]);
+  }, [callMode, code, contactId, onEnterRoom, translationMemory, waitingPerson]);
 
   useEffect(() => {
     setHasJoined(false);
@@ -148,7 +151,7 @@ export function CallLobbyScreen({ mode, code = '7A3-K9W', contactId, onBack, onE
 
   return (
     <motion.div initial={{ opacity: 0, x: 16 }} animate={{ opacity: 1, x: 0 }} className="min-h-full bg-slate-50">
-      <ScreenHeader title={title} subtitle="等待室 · 跨端连线" onBack={onBack} />
+      <ScreenHeader title={title} subtitle="等待室 · 实时通话" onBack={onBack} />
       <div className="p-4 space-y-4 pb-24">
         <section className="bg-white border border-gray-200 rounded-2xl p-5 text-center space-y-5">
           <div className="w-20 h-20 mx-auto rounded-3xl bg-blue-50 text-blue-700 flex items-center justify-center">
@@ -264,8 +267,11 @@ export function CallLobbyScreen({ mode, code = '7A3-K9W', contactId, onBack, onE
   );
 }
 
-export function CallRoomScreen({ call, onBack, onEndCall }: CallRoomScreenProps) {
-  const scriptedTurns = useMemo(() => (call.turns.length > 0 ? call.turns : SCENE_SCRIPTS.meeting), [call.turns]);
+export function CallRoomScreen({ call, translationMemory, onBack, onEndCall }: CallRoomScreenProps) {
+  const scriptedTurns = useMemo(
+    () => (call.turns.length > 0 ? call.turns : SCENE_SCRIPTS.meeting).map((turn) => applyTranslationMemory(turn, translationMemory)),
+    [call.turns, translationMemory],
+  );
   const [elapsed, setElapsed] = useState(0);
   const [revealedCount, setRevealedCount] = useState(1);
   const [captionMode, setCaptionMode] = useState<CaptionMode>('both');

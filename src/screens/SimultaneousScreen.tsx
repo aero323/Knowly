@@ -1,14 +1,18 @@
-import { Pause, Play } from 'lucide-react';
+import { FileText, Loader2, Pause, Pencil, Play } from 'lucide-react';
 import { motion } from 'motion/react';
 import { type KeyboardEvent, useEffect, useState } from 'react';
 import { ScreenHeader } from '@/components/ScreenHeader';
 import { cn } from '@/lib/utils';
 import type { KnowlyService } from '@/services/knowlyService';
-import type { SimultaneousCaption, SimultaneousSpeakerId } from '@/types';
+import type { ConversationSpeaker, ConversationTurn, SimultaneousCaption, SimultaneousSpeakerId, TranslationSession } from '@/types';
 
 interface SimultaneousScreenProps {
+  sceneId: string;
+  industryId: string;
+  concise: boolean;
   service: KnowlyService;
   onBack: () => void;
+  onSaveSession: (session: TranslationSession) => void;
 }
 
 type EditingTarget = {
@@ -20,6 +24,10 @@ type SourceLanguageChoice = 'auto' | 'id' | 'zh' | 'en';
 type TargetLanguageChoice = 'zh' | 'id' | 'en' | 'ja';
 
 const SPEAKERS: SimultaneousSpeakerId[] = ['speaker-1', 'speaker-2'];
+const SPEAKER_MAP: Record<SimultaneousSpeakerId, ConversationSpeaker> = {
+  'speaker-1': 'me',
+  'speaker-2': 'counterpart',
+};
 
 const DEFAULT_SPEAKER_NAMES: Record<SimultaneousSpeakerId, string> = {
   'speaker-1': '说话人 1',
@@ -119,15 +127,39 @@ function SpeakerNameControl({
         'min-h-10 max-w-full rounded-xl border font-semibold transition active:scale-[0.98]',
         style.badge,
         active && 'ring-2 ring-blue-100 shadow-sm',
-        compact ? 'px-2.5 text-xs inline-flex items-center' : 'w-full px-3 text-left flex items-center',
+        compact ? 'gap-1.5 px-2.5 text-xs inline-flex items-center' : 'w-full gap-2 px-3 text-left flex items-center',
       )}
     >
       <span className="truncate">{names[speakerId]}</span>
+      <Pencil className={cn('shrink-0 opacity-70', compact ? 'h-3 w-3' : 'h-3.5 w-3.5')} />
     </button>
   );
 }
 
-export function SimultaneousScreen({ service, onBack }: SimultaneousScreenProps) {
+function captionsToTurns(captions: SimultaneousCaption[]): ConversationTurn[] {
+  return captions.map((caption) => ({
+    id: `simultaneous-turn-${caption.id}`,
+    speaker: SPEAKER_MAP[caption.speakerId],
+    sourceLanguage: caption.sourceLanguage,
+    targetLanguage: caption.targetLanguage,
+    sourceText: caption.originalText,
+    translatedText: caption.translatedText,
+    terms: caption.keywords,
+  }));
+}
+
+function simultaneousTodos(turns: ConversationTurn[], fallbackTodos: string[]) {
+  const terms = new Set(turns.flatMap((turn) => turn.terms));
+  const todos = [
+    terms.has('发票') || terms.has('装箱单') ? '跟进发票和装箱单在约定时间前发出' : '',
+    terms.has('船期') || terms.has('港口确认') ? '再次确认船期和港口状态' : '',
+    terms.has('滞港费') || terms.has('费用承担') ? '书面确认滞港费责任方' : '',
+  ].filter(Boolean);
+
+  return todos.length > 0 ? todos : fallbackTodos;
+}
+
+export function SimultaneousScreen({ sceneId, industryId, concise, service, onBack, onSaveSession }: SimultaneousScreenProps) {
   const [captions, setCaptions] = useState<SimultaneousCaption[]>([]);
   const [paused, setPaused] = useState(false);
   const [speakerNames, setSpeakerNames] = useState<Record<SimultaneousSpeakerId, string>>(DEFAULT_SPEAKER_NAMES);
@@ -135,6 +167,8 @@ export function SimultaneousScreen({ service, onBack }: SimultaneousScreenProps)
   const [draftName, setDraftName] = useState('');
   const [sourceLanguage, setSourceLanguage] = useState<SourceLanguageChoice>('auto');
   const [targetLanguage, setTargetLanguage] = useState<TargetLanguageChoice>('zh');
+  const [isSaving, setIsSaving] = useState(false);
+  const [startedAt] = useState(() => new Date().toISOString());
 
   useEffect(() => {
     let mounted = true;
@@ -147,6 +181,7 @@ export function SimultaneousScreen({ service, onBack }: SimultaneousScreenProps)
   }, [service]);
 
   const activeCaption = captions[captions.length - 1];
+  const canFinish = captions.length > 0 && !isSaving;
 
   function beginRename(speakerId: SimultaneousSpeakerId, targetId: string) {
     setEditingTarget({ speakerId, targetId });
@@ -171,6 +206,49 @@ export function SimultaneousScreen({ service, onBack }: SimultaneousScreenProps)
 
     setEditingTarget(null);
     setDraftName('');
+  }
+
+  async function finishSession() {
+    if (!canFinish) return;
+
+    const committedSpeakerNames = {
+      ...speakerNames,
+      ...(editingTarget && draftName.trim() ? { [editingTarget.speakerId]: draftName.trim() } : {}),
+    };
+    const turns = captionsToTurns(captions);
+    const terms = Array.from(new Set(turns.flatMap((turn) => turn.terms))).slice(0, 8);
+
+    setIsSaving(true);
+    try {
+      const summary = await service.createSummary(turns);
+      onSaveSession({
+        id: `simultaneous-session-${Date.now()}`,
+        sceneId,
+        industryId,
+        concise,
+        startedAt,
+        endedAt: new Date().toISOString(),
+        turns,
+        summary: {
+          ...summary,
+          title: '同声传译纪要',
+          minutes: [
+            `本次同声传译共记录 ${turns.length} 条双语字幕，已保留原文和译文。`,
+            terms.length > 0 ? `重点涉及 ${terms.slice(0, 5).join('、')}。` : '已整理双方确认事项和后续跟进点。',
+            '可从历史记录进入摘要页回看字幕、复制待办或继续订正译文。',
+          ],
+          todos: simultaneousTodos(turns, summary.todos),
+          terms,
+        },
+        favoriteTurnIds: [],
+        speakerNames: {
+          me: committedSpeakerNames['speaker-1'],
+          counterpart: committedSpeakerNames['speaker-2'],
+        },
+      });
+    } finally {
+      setIsSaving(false);
+    }
   }
 
   return (
@@ -240,6 +318,15 @@ export function SimultaneousScreen({ service, onBack }: SimultaneousScreenProps)
               >
                 {paused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
                 {paused ? '继续同传' : '暂停同传'}
+              </button>
+              <button
+                type="button"
+                onClick={finishSession}
+                disabled={!canFinish}
+                className="min-h-12 flex-1 rounded-2xl bg-blue-500 px-4 font-semibold text-white shadow-lg shadow-black/10 transition active:scale-[0.99] disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400 flex items-center justify-center gap-2"
+              >
+                {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
+                {isSaving ? '生成中' : '结束并生成纪要'}
               </button>
             </div>
           </div>

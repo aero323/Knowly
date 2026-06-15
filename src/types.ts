@@ -1,4 +1,4 @@
-export type TabType = 'translate' | 'calls' | 'agent' | 'profile';
+export type TabType = 'translate' | 'calls' | 'subscription' | 'profile';
 
 export type AppScreen =
   | {
@@ -103,9 +103,11 @@ export interface TermEntry {
   createdAt: string;
 }
 
+export type ConversationSpeaker = 'me' | 'counterpart';
+
 export interface ConversationTurn {
   id: string;
-  speaker: 'me' | 'counterpart';
+  speaker: ConversationSpeaker;
   sourceLanguage: 'zh' | 'id';
   targetLanguage: 'zh' | 'id';
   sourceText: string;
@@ -121,6 +123,12 @@ export interface SessionSummary {
   terms: string[];
 }
 
+export interface PhotoTranslationHistory {
+  originalImageUrl: string;
+  translatedImageUrl: string;
+  sourceType: string;
+}
+
 export interface TranslationSession {
   id: string;
   sceneId: string;
@@ -131,6 +139,19 @@ export interface TranslationSession {
   turns: ConversationTurn[];
   summary: SessionSummary;
   favoriteTurnIds: string[];
+  speakerNames?: Partial<Record<ConversationSpeaker, string>>;
+  photoTranslation?: PhotoTranslationHistory;
+}
+
+export interface TranslationMemoryEntry {
+  id: string;
+  sourceLanguage: ConversationTurn['sourceLanguage'];
+  targetLanguage: ConversationTurn['targetLanguage'];
+  sourceText: string;
+  originalTranslatedText: string;
+  correctedText: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export type SimultaneousSpeakerId = 'speaker-1' | 'speaker-2';

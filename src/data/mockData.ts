@@ -7,6 +7,7 @@ import type {
   SessionSummary,
   SimultaneousCaption,
   TermEntry,
+  TranslationSession,
 } from '@/types';
 
 export const SCENES: ScenePrompt[] = [
@@ -254,6 +255,95 @@ export const PHOTO_TRANSLATION = {
   terms: ['镍矿', '装箱单', '港口'],
 };
 
+function svgDataUrl(svg: string) {
+  return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+}
+
+const PHOTO_HISTORY_ORIGINAL_IMAGE = svgDataUrl(`
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 960">
+  <defs>
+    <linearGradient id="paper" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8fafc"/>
+      <stop offset="1" stop-color="#e2e8f0"/>
+    </linearGradient>
+  </defs>
+  <rect width="720" height="960" fill="#0f172a"/>
+  <g transform="translate(74 56) rotate(-2 286 424)">
+    <rect width="572" height="848" rx="18" fill="url(#paper)"/>
+    <rect x="34" y="34" width="504" height="780" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="2"/>
+    <text x="64" y="92" font-family="Arial, sans-serif" font-size="34" font-weight="700" fill="#111827">PACKING LIST</text>
+    <text x="64" y="132" font-family="Arial, sans-serif" font-size="18" fill="#64748b">PT MOROWALI MINERAL SUPPLY</text>
+    <line x1="64" y1="168" x2="506" y2="168" stroke="#94a3b8" stroke-width="2"/>
+    <text x="64" y="220" font-family="Arial, sans-serif" font-size="24" fill="#111827">Packing List No. PL-7782</text>
+    <text x="64" y="274" font-family="Arial, sans-serif" font-size="24" fill="#111827">Item: Nickel ore sample bags</text>
+    <text x="64" y="328" font-family="Arial, sans-serif" font-size="24" fill="#111827">Qty: 38 bags</text>
+    <text x="64" y="382" font-family="Arial, sans-serif" font-size="24" fill="#111827">Port: Morowali</text>
+    <text x="64" y="436" font-family="Arial, sans-serif" font-size="24" fill="#111827">Truck No: B 3172 KLM</text>
+    <rect x="64" y="494" width="442" height="150" rx="10" fill="#f1f5f9" stroke="#cbd5e1"/>
+    <text x="88" y="548" font-family="Arial, sans-serif" font-size="20" fill="#334155">Note: Sample bags must be sealed</text>
+    <text x="88" y="590" font-family="Arial, sans-serif" font-size="20" fill="#334155">before loading to container.</text>
+    <rect x="64" y="704" width="178" height="46" fill="none" stroke="#64748b" stroke-width="2"/>
+    <text x="84" y="735" font-family="Arial, sans-serif" font-size="18" fill="#475569">Warehouse</text>
+    <rect x="328" y="704" width="178" height="46" fill="none" stroke="#64748b" stroke-width="2"/>
+    <text x="366" y="735" font-family="Arial, sans-serif" font-size="18" fill="#475569">Driver</text>
+  </g>
+</svg>
+`);
+
+const PHOTO_HISTORY_TRANSLATED_IMAGE = svgDataUrl(`
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 960">
+  <rect width="720" height="960" fill="#0f172a"/>
+  <g transform="translate(74 56) rotate(-2 286 424)">
+    <rect width="572" height="848" rx="18" fill="#f8fafc"/>
+    <rect x="34" y="34" width="504" height="780" rx="10" fill="#ffffff" stroke="#cbd5e1" stroke-width="2"/>
+    <text x="64" y="92" font-family="Arial, sans-serif" font-size="34" font-weight="700" fill="#111827">PACKING LIST</text>
+    <rect x="60" y="106" width="214" height="38" rx="8" fill="#dbeafe"/>
+    <text x="76" y="132" font-family="Arial, sans-serif" font-size="20" font-weight="700" fill="#1d4ed8">装箱单</text>
+    <line x1="64" y1="168" x2="506" y2="168" stroke="#94a3b8" stroke-width="2"/>
+    <text x="64" y="220" font-family="Arial, sans-serif" font-size="24" fill="#111827">Packing List No. PL-7782</text>
+    <rect x="60" y="234" width="274" height="38" rx="8" fill="#dbeafe"/>
+    <text x="76" y="260" font-family="Arial, sans-serif" font-size="20" font-weight="700" fill="#1d4ed8">装箱单编号：PL-7782</text>
+    <text x="64" y="318" font-family="Arial, sans-serif" font-size="24" fill="#111827">Item: Nickel ore sample bags</text>
+    <rect x="60" y="332" width="272" height="38" rx="8" fill="#dcfce7"/>
+    <text x="76" y="358" font-family="Arial, sans-serif" font-size="20" font-weight="700" fill="#047857">品名：镍矿样品袋</text>
+    <text x="64" y="416" font-family="Arial, sans-serif" font-size="24" fill="#111827">Qty: 38 bags</text>
+    <rect x="60" y="430" width="174" height="38" rx="8" fill="#fef3c7"/>
+    <text x="76" y="456" font-family="Arial, sans-serif" font-size="20" font-weight="700" fill="#92400e">数量：38 袋</text>
+    <text x="64" y="514" font-family="Arial, sans-serif" font-size="24" fill="#111827">Port: Morowali</text>
+    <rect x="60" y="528" width="204" height="38" rx="8" fill="#e0e7ff"/>
+    <text x="76" y="554" font-family="Arial, sans-serif" font-size="20" font-weight="700" fill="#3730a3">港口：莫罗瓦利</text>
+    <rect x="64" y="638" width="442" height="96" rx="12" fill="#eff6ff" stroke="#bfdbfe"/>
+    <text x="88" y="678" font-family="Arial, sans-serif" font-size="20" fill="#1e3a8a">备注：样品袋装柜前需密封。</text>
+    <text x="88" y="714" font-family="Arial, sans-serif" font-size="18" fill="#475569">已自动保留原文位置并叠加译文。</text>
+  </g>
+</svg>
+`);
+
+export const MOCK_PHOTO_TRANSLATION_SESSION: TranslationSession = {
+  id: 'mock-photo-translation-packing-list',
+  sceneId: 'logistics',
+  industryId: 'mining',
+  concise: true,
+  startedAt: '2026-06-04T09:20:00.000Z',
+  endedAt: '2026-06-04T09:22:00.000Z',
+  turns: [],
+  summary: {
+    title: '拍照翻译：装箱单',
+    minutes: [
+      '识别到装箱单编号 PL-7782，品名为镍矿样品袋。',
+      '数量为 38 袋，港口为 Morowali / 莫罗瓦利。',
+    ],
+    todos: ['核对装箱单编号和实际装车数量', '确认样品袋装柜前已密封'],
+    terms: ['装箱单', '镍矿', '莫罗瓦利'],
+  },
+  favoriteTurnIds: [],
+  photoTranslation: {
+    originalImageUrl: PHOTO_HISTORY_ORIGINAL_IMAGE,
+    translatedImageUrl: PHOTO_HISTORY_TRANSLATED_IMAGE,
+    sourceType: '现场单据照片',
+  },
+};
+
 export const SIMULTANEOUS_CAPTIONS: SimultaneousCaption[] = [
   {
     id: 'sim-1',
@@ -302,6 +392,7 @@ export const SIMULTANEOUS_CAPTIONS: SimultaneousCaption[] = [
 ];
 
 export const CONTACTS = [
+  { id: 'new-contact', name: '新联系人', lastCall: '刚刚', online: true, contactCode: 'KLY-5208', source: 'app' },
   { id: '1', name: 'Budi', lastCall: '2小时前', online: true, contactCode: 'KLY-8421', source: 'app' },
   { id: '2', name: 'Sari', lastCall: '昨天', online: false, contactCode: 'KLY-3095', source: 'app' },
   { id: '3', name: 'Adi', lastCall: '3天前', online: true, contactCode: 'KLY-6178', source: 'app' },

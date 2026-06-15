@@ -50,7 +50,7 @@ export function HoverNote({ note, children, className, triggerOnContainer = fals
         onMouseLeave={triggerOnContainer ? undefined : () => setIsOpen(false)}
         onFocus={showNote}
         onBlur={() => setIsOpen(false)}
-        onClick={() => (isOpen ? setIsOpen(false) : showNote())}
+        onClick={showNote}
         className="absolute -right-2 -top-2 z-20 h-6 min-w-6 rounded-full border-2 border-white bg-amber-500 px-1.5 text-[11px] font-bold leading-none text-white shadow-lg shadow-amber-900/20 outline-none transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-amber-300"
       >
         注
