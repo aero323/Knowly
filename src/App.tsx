@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { BottomNav } from '@/components/BottomNav';
-import { DEFAULT_PROFILE, DEFAULT_TERMS, INDUSTRIES, SCENES } from '@/data/mockData';
+import { DEFAULT_PROFILE, DEFAULT_TERMS, INDUSTRIES, MOCK_PHOTO_TRANSLATION_SESSION, SCENES } from '@/data/mockData';
 import { readStoredValue, writeStoredValue } from '@/lib/storage';
+import { upsertTranslationMemory } from '@/lib/translationMemory';
 import { mockKnowlyService } from '@/services/knowlyService';
-import { AgentView } from '@/views/AgentView';
 import { CallsView } from '@/views/CallsView';
 import { ProfileView } from '@/views/ProfileView';
+import { SubscriptionView } from '@/views/SubscriptionView';
 import { TranslateView } from '@/views/TranslateView';
 import { AssistantTaskScreen } from '@/screens/AssistantTaskScreen';
 import { CallLobbyScreen, CallRoomScreen } from '@/screens/CallScreens';
@@ -16,9 +17,10 @@ import { SceneEditorScreen } from '@/screens/SceneEditorScreen';
 import { SimultaneousScreen } from '@/screens/SimultaneousScreen';
 import { SubscriptionScreen } from '@/screens/SubscriptionScreen';
 import { SummaryScreen } from '@/screens/SummaryScreen';
-import type { AppScreen, BusinessProfile, CallSession, GeneralSettings, IndustryContext, ScenePrompt, TabType, TermEntry, TranslationSession } from '@/types';
+import type { AppScreen, BusinessProfile, CallSession, GeneralSettings, IndustryContext, ScenePrompt, TabType, TermEntry, TranslationMemoryEntry, TranslationSession } from '@/types';
 
 const HISTORY_KEY = 'knowly.translationHistory.v1';
+const TRANSLATION_MEMORY_KEY = 'knowly.translationMemory.v1';
 const TERMS_KEY = 'knowly.terms.v1';
 const PROFILE_KEY = 'knowly.profile.v1';
 const GENERAL_SETTINGS_KEY = 'knowly.generalSettings.v1';
@@ -65,10 +67,17 @@ function readGeneralSettings() {
   };
 }
 
+function readTranslationHistory() {
+  const storedHistory = readStoredValue<TranslationSession[]>(HISTORY_KEY, []);
+  if (storedHistory.some((session) => session.id === MOCK_PHOTO_TRANSLATION_SESSION.id)) return storedHistory;
+  return [MOCK_PHOTO_TRANSLATION_SESSION, ...storedHistory];
+}
+
 export default function App() {
   const [currentTab, setCurrentTab] = useState<TabType>('translate');
   const [screenStack, setScreenStack] = useState<AppScreen[]>([]);
-  const [translationHistory, setTranslationHistory] = useState<TranslationSession[]>(() => readStoredValue(HISTORY_KEY, []));
+  const [translationHistory, setTranslationHistory] = useState<TranslationSession[]>(readTranslationHistory);
+  const [translationMemory, setTranslationMemory] = useState<TranslationMemoryEntry[]>(() => readStoredValue(TRANSLATION_MEMORY_KEY, []));
   const [terms, setTerms] = useState<TermEntry[]>(() => readStoredValue(TERMS_KEY, DEFAULT_TERMS));
   const [profile, setProfile] = useState<BusinessProfile>(() => readStoredValue(PROFILE_KEY, DEFAULT_PROFILE));
   const [generalSettings, setGeneralSettings] = useState<GeneralSettings>(readGeneralSettings);
@@ -76,6 +85,7 @@ export default function App() {
   const [customIndustries, setCustomIndustries] = useState<IndustryContext[]>(() => readStoredValue(CUSTOM_INDUSTRIES_KEY, []));
   const [visibleSceneIds, setVisibleSceneIds] = useState<string[]>(() => readStoredValue(VISIBLE_SCENES_KEY, DEFAULT_VISIBLE_SCENE_IDS));
   const [activeCalls, setActiveCalls] = useState<CallSession[]>([]);
+  const [focusEnterprisePlan, setFocusEnterprisePlan] = useState(false);
   const service = useMemo(() => mockKnowlyService, []);
   const scenes = useMemo(() => [...SCENES, ...customScenes], [customScenes]);
   const industries = useMemo(() => [...INDUSTRIES, ...customIndustries], [customIndustries]);
@@ -84,6 +94,10 @@ export default function App() {
   useEffect(() => {
     writeStoredValue(HISTORY_KEY, translationHistory);
   }, [translationHistory]);
+
+  useEffect(() => {
+    writeStoredValue(TRANSLATION_MEMORY_KEY, translationMemory);
+  }, [translationMemory]);
 
   useEffect(() => {
     writeStoredValue(TERMS_KEY, terms);
@@ -97,10 +111,6 @@ export default function App() {
     writeStoredValue(GENERAL_SETTINGS_KEY, generalSettings);
     writeStoredValue(GENERAL_SETTINGS_LANGUAGE_SELECT_KEY, true);
   }, [generalSettings]);
-
-  useEffect(() => {
-    setTranslationHistory((current) => current.length > generalSettings.historyLimit ? current.slice(0, generalSettings.historyLimit) : current);
-  }, [generalSettings.historyLimit]);
 
   useEffect(() => {
     writeStoredValue(VISIBLE_SCENES_KEY, visibleSceneIds);
@@ -127,11 +137,21 @@ export default function App() {
     setScreenStack([]);
   }
 
+  function openEnterpriseSubscription() {
+    setFocusEnterprisePlan(true);
+    setCurrentTab('subscription');
+    setScreenStack([]);
+  }
+
   function addTerm(term: TermEntry) {
     setTerms((current) => {
       if (current.some((item) => item.zh === term.zh)) return current;
       return [term, ...current];
     });
+  }
+
+  function updateTerm(term: TermEntry) {
+    setTerms((current) => current.map((item) => item.id === term.id ? term : item));
   }
 
   function toggleVisibleScene(sceneId: string) {
@@ -152,8 +172,16 @@ export default function App() {
   }
 
   function saveTranslationSession(session: TranslationSession) {
-    setTranslationHistory((current) => [session, ...current.filter((item) => item.id !== session.id)].slice(0, generalSettings.historyLimit));
+    setTranslationHistory((current) => [session, ...current.filter((item) => item.id !== session.id)]);
     setScreenStack((current) => [...current.slice(0, -1), { type: 'session-summary', sessionId: session.id }]);
+  }
+
+  function updateTranslationSession(session: TranslationSession) {
+    setTranslationHistory((current) => current.map((item) => item.id === session.id ? session : item));
+  }
+
+  function rememberTranslationCorrection(memory: Omit<TranslationMemoryEntry, 'id' | 'createdAt' | 'updatedAt'>) {
+    setTranslationMemory((current) => upsertTranslationMemory(current, memory));
   }
 
   function enterCallRoom(call: CallSession) {
@@ -179,7 +207,7 @@ export default function App() {
       },
       favoriteTurnIds: [],
     };
-    setTranslationHistory((current) => [session, ...current].slice(0, generalSettings.historyLimit));
+    setTranslationHistory((current) => [session, ...current]);
     setScreenStack((current) => [...current.slice(0, -1), { type: 'session-summary', sessionId: session.id }]);
   }
 
@@ -193,18 +221,26 @@ export default function App() {
         <TranslateView
           conciseDefault={profile.conciseMode}
           profileIndustryId={profile.industryId}
-          industries={industries}
           scenes={scenes}
           visibleSceneIds={visibleSceneIds}
+          terms={terms}
           history={translationHistory}
           showHistory={generalSettings.showHistory}
+          historyLimit={generalSettings.historyLimit}
           onOpenScreen={pushScreen}
         />
       );
     }
-    if (currentTab === 'calls') return <CallsView onOpenScreen={pushScreen} />;
-    if (currentTab === 'agent') return <AgentView history={translationHistory} />;
-    return <ProfileView profile={profile} industries={industries} terms={terms} onOpenScreen={pushScreen} />;
+    if (currentTab === 'calls') return <CallsView onOpenScreen={pushScreen} onOpenEnterpriseSubscription={openEnterpriseSubscription} />;
+    if (currentTab === 'subscription') return <SubscriptionView focusEnterprise={focusEnterprisePlan} onEnterpriseFocused={() => setFocusEnterprisePlan(false)} />;
+    return (
+      <ProfileView
+        generalSettings={generalSettings}
+        onOpenScreen={pushScreen}
+        onUpdateGeneralSettings={setGeneralSettings}
+        onClearHistory={clearTranslationHistory}
+      />
+    );
   }
 
   function renderScreen(screen: AppScreen) {
@@ -215,11 +251,10 @@ export default function App() {
           industryId={screen.industryId}
           concise={screen.concise}
           scenes={scenes}
-          terms={terms}
           service={service}
+          translationMemory={translationMemory}
           onBack={popScreen}
           onSaveSession={saveTranslationSession}
-          onAddTerm={addTerm}
         />
       );
     }
@@ -229,6 +264,8 @@ export default function App() {
         <SummaryScreen
           session={translationHistory.find((session) => session.id === screen.sessionId)}
           onBack={popScreen}
+          onUpdateSession={updateTranslationSession}
+          onRememberCorrection={rememberTranslationCorrection}
         />
       );
     }
@@ -246,7 +283,16 @@ export default function App() {
     }
 
     if (screen.type === 'simultaneous') {
-      return <SimultaneousScreen service={service} onBack={popScreen} />;
+      return (
+        <SimultaneousScreen
+          sceneId={screen.sceneId}
+          industryId={screen.industryId}
+          concise={profile.conciseMode}
+          service={service}
+          onBack={popScreen}
+          onSaveSession={saveTranslationSession}
+        />
+      );
     }
 
     if (screen.type === 'call-lobby') {
@@ -255,6 +301,7 @@ export default function App() {
           mode={screen.mode}
           code={screen.code}
           contactId={screen.contactId}
+          translationMemory={translationMemory}
           onBack={popScreen}
           onEnterRoom={enterCallRoom}
         />
@@ -273,6 +320,7 @@ export default function App() {
             startedAt: new Date().toISOString(),
             turns: [],
           }}
+          translationMemory={translationMemory}
           onBack={popScreen}
           onEndCall={endCall}
         />
@@ -312,6 +360,8 @@ export default function App() {
         onOpenScreen={pushScreen}
         onUpdateProfile={setProfile}
         onUpdateGeneralSettings={setGeneralSettings}
+        onAddTerm={addTerm}
+        onUpdateTerm={updateTerm}
         onClearHistory={clearTranslationHistory}
         onToggleVisibleScene={toggleVisibleScene}
         onSaveCustomIndustry={saveCustomIndustry}

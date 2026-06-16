@@ -11,5 +11,9 @@ export function readStoredValue<T>(key: string, fallback: T): T {
 
 export function writeStoredValue<T>(key: string, value: T) {
   if (typeof window === 'undefined') return;
-  window.localStorage.setItem(key, JSON.stringify(value));
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Ignore storage quota/private-mode failures; the in-memory UI state still updates.
+  }
 }

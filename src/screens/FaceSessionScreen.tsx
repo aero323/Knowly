@@ -1,36 +1,24 @@
-import { ArrowLeft, Check, Copy, Mic, Plus, RotateCw, Star } from 'lucide-react';
+import { ArrowLeft, Pause, Play, RotateCw } from 'lucide-react';
 import { motion } from 'motion/react';
-import { useMemo, useState } from 'react';
-import { INDUSTRIES, SCENES } from '@/data/mockData';
+import { useEffect, useRef, useState } from 'react';
+import { SCENES } from '@/data/mockData';
+import { applyTranslationMemory } from '@/lib/translationMemory';
 import { cn } from '@/lib/utils';
 import type { KnowlyService } from '@/services/knowlyService';
-import type { ConversationTurn, ScenePrompt, TermEntry, TranslationSession } from '@/types';
+import type { ConversationTurn, ScenePrompt, TranslationMemoryEntry, TranslationSession } from '@/types';
 
 interface FaceSessionScreenProps {
   sceneId: string;
   industryId: string;
   concise: boolean;
   scenes: ScenePrompt[];
-  terms: TermEntry[];
   service: KnowlyService;
+  translationMemory: TranslationMemoryEntry[];
   onBack: () => void;
   onSaveSession: (session: TranslationSession) => void;
-  onAddTerm: (term: TermEntry) => void;
 }
 
 type Speaker = ConversationTurn['speaker'];
-
-function buildTermEntry(term: string, category: string): TermEntry {
-  return {
-    id: `term-${term}-${Date.now()}`,
-    zh: term,
-    idText: term === '滞港费' ? 'biaya demurrage' : term === '装箱单' ? 'packing list' : term,
-    category,
-    note: '从面对面翻译会话加入',
-    source: 'session',
-    createdAt: new Date().toISOString(),
-  };
-}
 
 function textForViewer(turn: ConversationTurn, viewer: Speaker) {
   return turn.speaker === viewer ? turn.sourceText : turn.translatedText;
@@ -40,7 +28,7 @@ function panelCopy(currentTurn: ConversationTurn | undefined, previousTurn: Conv
   if (!currentTurn) {
     return {
       previous: '',
-      current: viewer === 'me' ? '点击麦克风，说一句中文' : 'Tekan mikrofon untuk mulai',
+      current: viewer === 'me' ? '请说中文' : '请说印尼语',
     };
   }
 
@@ -55,9 +43,7 @@ interface ConversationPanelProps {
   latestTurn?: ConversationTurn;
   previousTurn?: ConversationTurn;
   isFlipped?: boolean;
-  isListening: boolean;
-  disabled: boolean;
-  onListen: (speaker: Speaker) => void;
+  isProcessing: boolean;
 }
 
 function ConversationPanel({
@@ -65,9 +51,7 @@ function ConversationPanel({
   latestTurn,
   previousTurn,
   isFlipped = false,
-  isListening,
-  disabled,
-  onListen,
+  isProcessing,
 }: ConversationPanelProps) {
   const isCounterpart = speaker === 'counterpart';
   const copy = panelCopy(latestTurn, previousTurn, speaker);
@@ -78,8 +62,7 @@ function ConversationPanel({
         <div className="space-y-5">
           <div className="flex items-start">
             <div>
-              <p className={cn('text-sm font-medium', isCounterpart ? 'text-sky-100' : 'text-slate-400')}>{isCounterpart ? '对方' : '我方'}</p>
-              <h2 className="text-2xl font-bold mt-1">{isCounterpart ? '印尼语' : '中文(简体)'}</h2>
+              <h2 className="text-2xl font-bold">{isCounterpart ? '请说印尼语' : '请说中文'}</h2>
               <p className={cn('text-sm mt-0.5', isCounterpart ? 'text-sky-100/80' : 'text-slate-400')}>{isCounterpart ? 'Bahasa Indonesia' : 'Chinese'}</p>
             </div>
           </div>
@@ -88,28 +71,47 @@ function ConversationPanel({
             {copy.previous && (
               <p className={cn('text-xs leading-relaxed mb-3 line-clamp-2', isCounterpart ? 'text-sky-100/75' : 'text-slate-400')}>{copy.previous}</p>
             )}
-            <p className="text-xl font-semibold leading-relaxed">{isListening ? (isCounterpart ? 'Mendengarkan...' : '正在翻译...') : copy.current}</p>
+            <p className="text-xl font-semibold leading-relaxed">{isProcessing ? (isCounterpart ? 'Menerjemahkan...' : '正在翻译...') : copy.current}</p>
           </div>
-        </div>
-
-        <div className="pb-1">
-          <button
-            type="button"
-            onClick={() => onListen(speaker)}
-            disabled={disabled}
-            aria-label={isCounterpart ? '请说印尼语' : '我说中文'}
-            className={cn(
-              'min-h-14 w-full rounded-2xl px-5 flex items-center justify-center gap-2.5 text-base font-semibold shadow-lg transition active:scale-[0.99] disabled:opacity-60 disabled:active:scale-100',
-              isCounterpart ? 'bg-white text-[#2F82C5] shadow-slate-900/20' : 'bg-[#2D63FF] text-white shadow-blue-300/60',
-              isListening && 'ring-4 ring-white/30',
-            )}
-          >
-            <Mic className="w-5 h-5 stroke-[2]" />
-            {isListening ? (isCounterpart ? '正在听印尼语' : '正在听中文') : (isCounterpart ? '请说印尼语' : '我说中文')}
-          </button>
         </div>
       </div>
     </section>
+  );
+}
+
+function RealtimeStatus({
+  isPaused,
+  onPauseToggle,
+}: {
+  isPaused: boolean;
+  onPauseToggle: () => void;
+}) {
+  const audioBars = [0.36, 0.62, 0.42, 0.86, 0.54, 0.72, 0.48, 0.92, 0.58, 0.68];
+
+  return (
+    <div className="flex items-center justify-center gap-3">
+      <div className="flex h-14 min-w-0 flex-1 items-center justify-center gap-2 rounded-2xl bg-blue-50 px-4 text-blue-700">
+        <div className="flex h-7 items-end gap-1.5" aria-hidden="true">
+          {audioBars.map((height, index) => (
+            <span
+              key={`${height}-${index}`}
+              className={cn('knowly-audio-bar w-2 rounded-full bg-blue-500', isPaused && 'opacity-35 [animation-play-state:paused]')}
+              style={{ height: `${height * 100}%`, animationDelay: `${index * 74}ms` }}
+            />
+          ))}
+        </div>
+        <span className="shrink-0 text-base font-semibold">{isPaused ? '已暂停' : '即时翻译中'}</span>
+      </div>
+      <button
+        type="button"
+        onClick={onPauseToggle}
+        aria-label={isPaused ? '继续即时翻译' : '暂停即时翻译'}
+        className="flex h-14 shrink-0 items-center justify-center gap-2 rounded-2xl bg-[#2D63FF] px-5 text-white shadow-md shadow-blue-200 transition active:scale-[0.98]"
+      >
+        {isPaused ? <Play className="h-5 w-5 fill-current stroke-[2.2]" /> : <Pause className="h-5 w-5 fill-current stroke-[2.2]" />}
+        <span className="text-base font-semibold">{isPaused ? '继续' : '暂停'}</span>
+      </button>
+    </div>
   );
 }
 
@@ -118,34 +120,50 @@ export function FaceSessionScreen({
   industryId,
   concise,
   scenes,
-  terms,
   service,
+  translationMemory,
   onBack,
   onSaveSession,
-  onAddTerm,
 }: FaceSessionScreenProps) {
   const [turns, setTurns] = useState<ConversationTurn[]>([]);
-  const [favoriteTurnIds, setFavoriteTurnIds] = useState<string[]>([]);
-  const [copiedTurnId, setCopiedTurnId] = useState<string | null>(null);
-  const [listeningSpeaker, setListeningSpeaker] = useState<Speaker | null>(null);
+  const [processingSpeaker, setProcessingSpeaker] = useState<Speaker | null>(null);
+  const [isPaused, setIsPaused] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isCounterpartFlipped, setIsCounterpartFlipped] = useState(true);
+  const isGeneratingRef = useRef(false);
 
   const scene = scenes.find((item) => item.id === sceneId) ?? SCENES[0];
-  const industry = INDUSTRIES.find((item) => item.id === industryId) ?? INDUSTRIES[0];
   const latestTurn = turns[turns.length - 1];
   const previousTurn = turns[turns.length - 2];
   const canFinish = turns.length > 0;
-  const knownTerms = useMemo(() => new Set(terms.map((term) => term.zh)), [terms]);
-  const latestIsFavorite = latestTurn ? favoriteTurnIds.includes(latestTurn.id) : false;
 
-  async function addNextTurn(speaker: Speaker) {
-    if (listeningSpeaker) return;
-    setListeningSpeaker(speaker);
-    const turn = await service.nextConversationTurn({ sceneId, speaker, turnIndex: turns.length });
-    setTurns((current) => [...current, turn]);
-    setListeningSpeaker(null);
-  }
+  useEffect(() => {
+    if (isPaused || isSaving || isGeneratingRef.current) return;
+
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      if (cancelled || isGeneratingRef.current) return;
+
+      const speaker: Speaker = turns.length % 2 === 0 ? 'counterpart' : 'me';
+      isGeneratingRef.current = true;
+      setProcessingSpeaker(speaker);
+      service.nextConversationTurn({ sceneId, speaker, turnIndex: turns.length })
+        .then((turn) => {
+          if (!cancelled) {
+            setTurns((current) => [...current, applyTranslationMemory(turn, translationMemory)]);
+          }
+        })
+        .finally(() => {
+          isGeneratingRef.current = false;
+          setProcessingSpeaker((current) => current === speaker ? null : current);
+        });
+    }, turns.length === 0 ? 650 : 2400);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [isPaused, isSaving, sceneId, service, translationMemory, turns.length]);
 
   async function saveAndFinish() {
     if (!canFinish || isSaving) return;
@@ -160,7 +178,7 @@ export function FaceSessionScreen({
       endedAt: new Date().toISOString(),
       turns,
       summary,
-      favoriteTurnIds,
+      favoriteTurnIds: [],
     };
     onSaveSession(session);
     setIsSaving(false);
@@ -175,18 +193,6 @@ export function FaceSessionScreen({
     await saveAndFinish();
   }
 
-  function copyLatestTurn() {
-    if (!latestTurn) return;
-    setCopiedTurnId(latestTurn.id);
-    void navigator.clipboard?.writeText(latestTurn.translatedText).catch(() => undefined);
-    window.setTimeout(() => setCopiedTurnId(null), 1200);
-  }
-
-  function toggleLatestFavorite() {
-    if (!latestTurn) return;
-    setFavoriteTurnIds((current) => current.includes(latestTurn.id) ? current.filter((id) => id !== latestTurn.id) : [...current, latestTurn.id]);
-  }
-
   return (
     <motion.div initial={{ opacity: 0, x: 16 }} animate={{ opacity: 1, x: 0 }} className="h-screen bg-white flex flex-col overflow-hidden">
       <ConversationPanel
@@ -194,9 +200,7 @@ export function FaceSessionScreen({
         latestTurn={latestTurn}
         previousTurn={previousTurn}
         isFlipped={isCounterpartFlipped}
-        isListening={listeningSpeaker === 'counterpart'}
-        disabled={Boolean(listeningSpeaker)}
-        onListen={addNextTurn}
+        isProcessing={processingSpeaker === 'counterpart'}
       />
 
       <div className="relative z-10 bg-white border-y border-slate-200 shadow-sm">
@@ -207,13 +211,14 @@ export function FaceSessionScreen({
               onClick={handleExit}
               disabled={isSaving}
               aria-label={canFinish ? '返回并自动生成纪要' : '返回'}
-              className="w-11 h-11 rounded-2xl bg-slate-100 text-slate-700 flex items-center justify-center active:bg-slate-200 disabled:opacity-60 transition-colors"
+              className="min-h-11 shrink-0 rounded-2xl bg-red-50 px-3 text-base font-bold text-red-600 flex items-center justify-center gap-1.5 active:bg-red-100 disabled:opacity-60 transition-colors"
             >
               <ArrowLeft className="w-5 h-5" />
+              <span>返回</span>
             </button>
 
             <div className="min-w-0 flex-1 text-center">
-              <p className="text-sm font-semibold text-slate-950 truncate">{scene.name} · {industry.name}</p>
+              <p className="text-sm font-semibold text-slate-950 truncate">{scene.name}</p>
               <p className="text-xs text-slate-400">{isSaving ? '正在生成纪要' : `${turns.length} 条对话${concise ? ' · 商务简练' : ''}`}</p>
             </div>
 
@@ -229,45 +234,6 @@ export function FaceSessionScreen({
               {isCounterpartFlipped ? '上屏翻转' : '上屏同向'}
             </button>
           </div>
-
-          {latestTurn && (
-            <div className="flex flex-wrap items-center justify-center gap-2">
-              <button
-                type="button"
-                onClick={toggleLatestFavorite}
-                className={cn('min-h-10 px-3 rounded-xl text-xs font-medium flex items-center gap-1.5 transition-colors', latestIsFavorite ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600 active:bg-slate-200')}
-              >
-                <Star className={cn('w-3.5 h-3.5', latestIsFavorite && 'fill-current')} />
-                {latestIsFavorite ? '已收藏' : '收藏'}
-              </button>
-              <button
-                type="button"
-                onClick={copyLatestTurn}
-                className="min-h-10 px-3 rounded-xl bg-slate-100 text-xs font-medium text-slate-600 flex items-center gap-1.5 active:bg-slate-200 transition-colors"
-              >
-                <Copy className="w-3.5 h-3.5" />
-                {copiedTurnId === latestTurn.id ? '已复制' : '复制译文'}
-              </button>
-              {latestTurn.terms.map((term) => {
-                const isKnown = knownTerms.has(term);
-                return (
-                  <button
-                    type="button"
-                    key={term}
-                    disabled={isKnown}
-                    onClick={() => onAddTerm(buildTermEntry(term, industry.name))}
-                    className={cn(
-                      'min-h-10 px-3 rounded-xl text-xs font-medium flex items-center gap-1.5 transition-colors',
-                      isKnown ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600 active:bg-slate-200',
-                    )}
-                  >
-                    {isKnown ? <Check className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
-                    {term}
-                  </button>
-                );
-              })}
-            </div>
-          )}
         </div>
       </div>
 
@@ -275,10 +241,12 @@ export function FaceSessionScreen({
         speaker="me"
         latestTurn={latestTurn}
         previousTurn={previousTurn}
-        isListening={listeningSpeaker === 'me'}
-        disabled={Boolean(listeningSpeaker)}
-        onListen={addNextTurn}
+        isProcessing={processingSpeaker === 'me'}
       />
+
+      <footer className="relative z-20 border-t border-slate-200 bg-white px-4 py-3 shadow-[0_-10px_30px_rgba(15,23,42,0.08)]">
+        <RealtimeStatus isPaused={isPaused} onPauseToggle={() => setIsPaused((current) => !current)} />
+      </footer>
     </motion.div>
   );
 }

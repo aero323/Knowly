@@ -1,4 +1,8 @@
 node_modules/
+.npm-cache/
+.electron-cache/
+out/
+release/
 build/
 dist/
 coverage/

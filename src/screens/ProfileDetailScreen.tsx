@@ -23,6 +23,7 @@ import {
   Trash2,
   Type,
   Upload,
+  X,
 } from 'lucide-react';
 import { motion } from 'motion/react';
 import { ScreenHeader } from '@/components/ScreenHeader';
@@ -35,7 +36,6 @@ import type {
   IndustryContext,
   LanguageCode,
   ScenePrompt,
-  SimultaneousDirection,
   SourceLanguageCode,
   SubtitleSize,
   TermEntry,
@@ -54,6 +54,8 @@ interface ProfileDetailScreenProps {
   onOpenScreen: (screen: AppScreen) => void;
   onUpdateProfile: (profile: BusinessProfile) => void;
   onUpdateGeneralSettings: (settings: GeneralSettings) => void;
+  onAddTerm: (term: TermEntry) => void;
+  onUpdateTerm: (term: TermEntry) => void;
   onClearHistory: () => void;
   onToggleVisibleScene: (sceneId: string) => void;
   onSaveCustomIndustry: (industry: IndustryContext) => void;
@@ -71,7 +73,7 @@ interface ChoiceOption<T extends string | number> {
 const DETAIL_META = {
   industry: { title: '所属行业', subtitle: '影响术语和表达偏好', icon: Briefcase },
   scenes: { title: '自定义场景', subtitle: '保存常用对话流程', icon: MessageSquareText },
-  terms: { title: '我的名词库', subtitle: '本地保存的业务术语', icon: BookOpen },
+  terms: { title: '我的术语库', subtitle: '本地保存的业务术语', icon: BookOpen },
   general: { title: '通用设置', subtitle: '语言、显示和默认模式', icon: Settings },
   privacy: { title: '隐私与安全', subtitle: '政策与协议', icon: Lock },
   help: { title: '帮助与反馈', subtitle: '快速上手和问题反馈', icon: HelpCircle },
@@ -92,16 +94,10 @@ const TARGET_LANGUAGE_OPTIONS: ChoiceOption<LanguageCode>[] = [
   { value: 'ja', label: '日语' },
 ];
 
-const DIRECTION_OPTIONS: ChoiceOption<SimultaneousDirection>[] = [
-  { value: 'id-to-zh', label: '印尼语 → 中文' },
-  { value: 'zh-to-id', label: '中文 → 印尼语' },
-  { value: 'auto', label: '自动识别' },
-];
-
 const FORMALITY_OPTIONS: ChoiceOption<TranslationFormality>[] = [
   { value: 'plain', label: '自然直译', description: '保留口语感' },
   { value: 'business', label: '商务正式', description: '默认推荐' },
-  { value: 'formal', label: '正式严谨', description: '适合合同和文件' },
+  { value: 'formal', label: '科学严谨', description: '适合合同和文件' },
 ];
 
 const SUBTITLE_SIZE_OPTIONS: ChoiceOption<SubtitleSize>[] = [
@@ -191,7 +187,7 @@ const QUICK_START_ITEMS = [
   {
     icon: Camera,
     title: '拍照翻译',
-    body: '适合菜单、路牌、文件、图纸和单据。上传或拍照后可查看识别结果，并把重要术语加入名词库。',
+    body: '适合菜单、路牌、文件、图纸和单据。上传或拍照后可查看识别结果，并把重要术语加入术语库。',
   },
   {
     icon: Bot,
@@ -315,6 +311,8 @@ export function ProfileDetailScreen({
   onOpenScreen,
   onUpdateProfile,
   onUpdateGeneralSettings,
+  onAddTerm,
+  onUpdateTerm,
   onClearHistory,
   onToggleVisibleScene,
   onSaveCustomIndustry,
@@ -326,8 +324,12 @@ export function ProfileDetailScreen({
   const [feedbackType, setFeedbackType] = useState<FeedbackType>('translation');
   const [feedbackDescription, setFeedbackDescription] = useState('');
   const [feedbackAttachmentName, setFeedbackAttachmentName] = useState('');
-  const [includeRecentContext, setIncludeRecentContext] = useState(true);
   const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
+  const [isTermEditorOpen, setIsTermEditorOpen] = useState(false);
+  const [editingTerm, setEditingTerm] = useState<TermEntry | null>(null);
+  const [termOriginalText, setTermOriginalText] = useState('');
+  const [termTranslatedText, setTermTranslatedText] = useState('');
+  const [termInstruction, setTermInstruction] = useState('');
   const meta = DETAIL_META[detail];
   const Icon = meta.icon;
   const activePrivacyDocument = privacyDocument ? PRIVACY_DOCUMENTS[privacyDocument] : null;
@@ -400,7 +402,60 @@ export function ProfileDetailScreen({
     setFeedbackSubmitted(true);
     setFeedbackDescription('');
     setFeedbackAttachmentName('');
-    setIncludeRecentContext(true);
+  }
+
+  function openTermEditor(term: TermEntry) {
+    setIsTermEditorOpen(true);
+    setEditingTerm(term);
+    setTermOriginalText(term.zh);
+    setTermTranslatedText(term.idText);
+    setTermInstruction(term.note);
+  }
+
+  function openNewTermEditor() {
+    setIsTermEditorOpen(true);
+    setEditingTerm(null);
+    setTermOriginalText('');
+    setTermTranslatedText('');
+    setTermInstruction('');
+  }
+
+  function closeTermEditor() {
+    setIsTermEditorOpen(false);
+    setEditingTerm(null);
+    setTermOriginalText('');
+    setTermTranslatedText('');
+    setTermInstruction('');
+  }
+
+  function saveTermEditor() {
+    const originalText = termOriginalText.trim();
+    const translatedText = termTranslatedText.trim();
+    const instruction = termInstruction.trim();
+    if (!originalText || !translatedText || !instruction) return;
+
+    if (!editingTerm) {
+      onAddTerm({
+        id: `term-${Date.now()}`,
+        zh: originalText,
+        idText: translatedText,
+        category: '自定义',
+        note: instruction,
+        source: 'user',
+        createdAt: new Date().toISOString(),
+      });
+      closeTermEditor();
+      return;
+    }
+
+    onUpdateTerm({
+      ...editingTerm,
+      zh: originalText,
+      idText: translatedText,
+      note: instruction,
+      source: editingTerm.source === 'default' ? 'user' : editingTerm.source,
+    });
+    closeTermEditor();
   }
 
   return (
@@ -409,9 +464,19 @@ export function ProfileDetailScreen({
         title={activePrivacyDocument?.title ?? meta.title}
         subtitle={activePrivacyDocument?.subtitle ?? meta.subtitle}
         onBack={handleBack}
+        action={detail === 'terms' ? (
+          <button
+            type="button"
+            onClick={openNewTermEditor}
+            aria-label="新增术语"
+            className="min-h-10 min-w-10 rounded-full bg-blue-600 text-white flex items-center justify-center active:bg-blue-700 transition-colors"
+          >
+            <Plus className="w-5 h-5" />
+          </button>
+        ) : undefined}
       />
       <div className="p-4 space-y-4">
-        {detail !== 'industry' && !activePrivacyDocument && (
+        {detail !== 'industry' && detail !== 'terms' && detail !== 'privacy' && detail !== 'help' && !activePrivacyDocument && (
           <section className="bg-white border border-gray-200 rounded-2xl p-4 flex items-start gap-3">
             <div className="w-10 h-10 rounded-2xl bg-blue-50 text-blue-600 flex items-center justify-center">
               <Icon className="w-5 h-5" />
@@ -522,23 +587,25 @@ export function ProfileDetailScreen({
         {detail === 'terms' && (
           <section className="space-y-3">
             {terms.map((term) => (
-              <article key={term.id} className="bg-white border border-gray-200 rounded-2xl p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-semibold text-gray-950">{term.zh}</p>
-                    <p className="text-sm text-blue-700 mt-1">{term.idText}</p>
-                    <p className="text-xs text-gray-500 mt-2">{term.note}</p>
-                  </div>
-                  <span className="px-2 py-1 rounded bg-gray-100 text-[11px] text-gray-600">{term.category}</span>
+              <button
+                key={term.id}
+                type="button"
+                onClick={() => openTermEditor(term)}
+                className="w-full bg-white border border-gray-200 rounded-2xl p-4 text-left active:bg-gray-50 transition-colors"
+              >
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-gray-950">{term.zh}</p>
+                  <p className="text-sm text-blue-700 mt-1">{term.idText}</p>
+                  <p className="text-xs leading-5 text-gray-500 mt-2">{term.note}</p>
                 </div>
-              </article>
+              </button>
             ))}
           </section>
         )}
 
         {detail === 'general' && (
           <>
-            <SettingBlock title="默认语言与方向">
+            <SettingBlock title="默认语言">
               <section className="bg-white border border-gray-200 rounded-2xl p-4 space-y-4">
                 <div className="space-y-2">
                   <div className="flex items-center gap-2 text-sm font-semibold text-gray-950">
@@ -553,13 +620,6 @@ export function ProfileDetailScreen({
                     默认目标语言
                   </div>
                   <SelectField options={TARGET_LANGUAGE_OPTIONS} value={generalSettings.targetLanguage} onChange={updateTargetLanguage} />
-                </div>
-                <div className="space-y-2">
-                  <div className="flex items-center gap-2 text-sm font-semibold text-gray-950">
-                    <Headphones className="w-4 h-4 text-blue-600" />
-                    同声传译默认方向
-                  </div>
-                  <ChoiceGroup options={DIRECTION_OPTIONS} value={generalSettings.simultaneousDirection} onChange={(value) => updateSettings({ simultaneousDirection: value })} />
                 </div>
               </section>
             </SettingBlock>
@@ -601,14 +661,14 @@ export function ProfileDetailScreen({
             <SettingBlock title="历史记录">
               <SwitchRow
                 title="展示历史记录"
-                description="控制首页是否展示最近一次翻译纪要，不会删除任何记录。"
+                description="控制首页是否展示翻译纪要，不会删除任何记录。"
                 checked={generalSettings.showHistory}
                 onChange={(checked) => updateSettings({ showHistory: checked })}
               />
               <section className="bg-white border border-gray-200 rounded-2xl p-4 space-y-3">
                 <div className="flex items-center gap-2 text-sm font-semibold text-gray-950">
                   <FileText className="w-4 h-4 text-blue-600" />
-                  最近记录保留数量
+                  展示记录
                 </div>
                 <ChoiceGroup options={HISTORY_LIMIT_OPTIONS} value={generalSettings.historyLimit} onChange={(value) => updateSettings({ historyLimit: value })} />
               </section>
@@ -730,7 +790,7 @@ export function ProfileDetailScreen({
 
                 <div className="space-y-2">
                   <label className="block text-xs font-semibold text-gray-500">问题类型</label>
-                  <ChoiceGroup options={FEEDBACK_OPTIONS} value={feedbackType} onChange={setFeedbackType} />
+                  <ChoiceGroup<FeedbackType> options={FEEDBACK_OPTIONS} value={feedbackType} onChange={(value) => setFeedbackType(value)} />
                 </div>
 
                 <label className="block space-y-2">
@@ -764,13 +824,6 @@ export function ProfileDetailScreen({
                   />
                 </label>
 
-                <SwitchRow
-                  title="附带最近页面信息"
-                  description="帮助我们定位问题。当前原型只做本地 mock，不会真的上传。"
-                  checked={includeRecentContext}
-                  onChange={setIncludeRecentContext}
-                />
-
                 <button
                   type="button"
                   onClick={submitFeedback}
@@ -785,6 +838,71 @@ export function ProfileDetailScreen({
           </>
         )}
       </div>
+
+      {isTermEditorOpen && (
+        <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/40 px-0" role="dialog" aria-modal="true" aria-labelledby="term-editor-title">
+          <div className="w-full max-w-md rounded-t-3xl bg-white p-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <h2 id="term-editor-title" className="text-lg font-semibold text-gray-950">{editingTerm ? '编辑术语' : '新增术语'}</h2>
+                <p className="mt-1 text-sm leading-5 text-gray-500">自定义原文、译文，以及 AI 使用该译法的场合。</p>
+              </div>
+              <button
+                type="button"
+                onClick={closeTermEditor}
+                aria-label="关闭"
+                className="min-h-10 min-w-10 rounded-full bg-gray-100 text-gray-500 flex items-center justify-center active:bg-gray-200"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="mt-5 space-y-4">
+              <label className="block space-y-2">
+                <span className="block text-xs font-semibold text-gray-500">原文</span>
+                <input
+                  value={termOriginalText}
+                  onChange={(event) => setTermOriginalText(event.target.value)}
+                  placeholder="例如：镍矿"
+                  autoFocus
+                  className="min-h-12 w-full rounded-2xl border border-gray-200 bg-gray-50 px-3 text-sm outline-none focus:border-blue-500 focus:bg-white"
+                />
+              </label>
+
+              <label className="block space-y-2">
+                <span className="block text-xs font-semibold text-gray-500">译文</span>
+                <input
+                  value={termTranslatedText}
+                  onChange={(event) => setTermTranslatedText(event.target.value)}
+                  placeholder="例如：bijih nikel"
+                  className="min-h-12 w-full rounded-2xl border border-gray-200 bg-gray-50 px-3 text-sm outline-none focus:border-blue-500 focus:bg-white"
+                />
+              </label>
+
+              <label className="block space-y-2">
+                <span className="block text-xs font-semibold text-gray-500">翻译指示</span>
+                <textarea
+                  value={termInstruction}
+                  onChange={(event) => setTermInstruction(event.target.value)}
+                  rows={4}
+                  placeholder="说明 AI 在何种场合下可以使用此术语翻译"
+                  className="w-full resize-none rounded-2xl border border-gray-200 bg-gray-50 px-3 py-3 text-sm leading-6 outline-none focus:border-blue-500 focus:bg-white"
+                />
+                <span className="block text-xs leading-5 text-gray-400">翻译指示是告诉 AI 在何种场合下可以使用此术语翻译。</span>
+              </label>
+
+              <button
+                type="button"
+                onClick={saveTermEditor}
+                disabled={!termOriginalText.trim() || !termTranslatedText.trim() || !termInstruction.trim()}
+                className="min-h-12 w-full rounded-2xl bg-slate-950 text-sm font-semibold text-white active:bg-slate-800 disabled:bg-gray-200 disabled:text-gray-400"
+              >
+                保存术语
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </motion.div>
   );
 }

@@ -1,287 +1,276 @@
-import { useState } from 'react';
-import { Bot, CheckCircle2, Crown, Languages, PhoneCall, ShieldCheck, Sparkles } from 'lucide-react';
+import { useEffect, useRef } from 'react';
+import { Building2, Camera, CheckCircle2, Crown, Languages, PhoneCall, Sparkles, Video } from 'lucide-react';
 import { motion } from 'motion/react';
-import { cn } from '@/lib/utils';
 import { ScreenHeader } from '@/components/ScreenHeader';
+import { cn } from '@/lib/utils';
 
 interface SubscriptionScreenProps {
   onBack: () => void;
 }
 
-type PlanId = 'pro' | 'ultra';
-type BillingId = 'renew' | 'monthly' | 'yearly';
+type PlanId = 'personal-monthly' | 'travel' | 'enterprise';
 
-interface BillingOption {
-  id: BillingId;
+interface PlanEntitlement {
+  icon: typeof Languages;
   label: string;
-  price: string;
-  suffix: string;
-  helper: string;
-  badge?: string;
+  value: string;
 }
 
-interface Plan {
+interface SubscriptionPlan {
   id: PlanId;
   name: string;
+  badge: string;
+  price: string;
+  priceSuffix?: string;
   description: string;
-  highlight: string;
   icon: typeof Crown;
-  services: Array<{
-    icon: typeof Languages;
-    label: string;
-    value: string;
-  }>;
-  billings: BillingOption[];
-  benefits: string[];
+  entitlements: PlanEntitlement[];
+  features: string[];
+  ctaLabel: string;
 }
 
-const PLANS: Plan[] = [
+const FREE_MINUTES_TOTAL = 30;
+const FREE_MINUTES_USED = 12;
+const FREE_MINUTES_LEFT = FREE_MINUTES_TOTAL - FREE_MINUTES_USED;
+const FREE_USAGE_PERCENT = Math.round((FREE_MINUTES_USED / FREE_MINUTES_TOTAL) * 100);
+
+const PLANS: SubscriptionPlan[] = [
   {
-    id: 'pro',
-    name: 'Knowly Pro',
-    description: '适合日常会议、AI 通话和客户沟通的印尼本地业务场景。',
-    highlight: '翻译 + AI通话',
+    id: 'personal-monthly',
+    name: '个人经济版',
+    badge: '个人常用',
+    price: '¥80',
+    description: '日常沟通、会议和客户往来都能覆盖。',
     icon: Crown,
-    services: [
-      { icon: Languages, label: '翻译时长', value: '10 小时 / 月' },
-      { icon: PhoneCall, label: 'AI通话', value: '3 小时 / 月' },
+    entitlements: [
+      { icon: Languages, label: '面对面 / 同声传译 / 音频通话', value: '30 小时' },
+      { icon: Video, label: '视频通话', value: '赠送 4 小时' },
+      { icon: Camera, label: '拍照翻译', value: '不限量' },
     ],
-    billings: [
-      { id: 'renew', label: '连续包月', price: 'Rp 89.000', suffix: '/ 月', helper: '自动续费，可随时取消', badge: '省 10%' },
-      { id: 'monthly', label: '月付', price: 'Rp 99.000', suffix: '/ 月', helper: '单月购买，不自动续费' },
-      { id: 'yearly', label: '年付', price: 'Rp 948.000', suffix: '/ 年', helper: '折合 Rp 79.000 / 月', badge: '省 20%' },
-    ],
-    benefits: ['实时语音翻译优先队列', '会议摘要与待办自动生成', 'AI通话字幕与双语摘要', '团队术语库同步'],
+    features: ['不限有效期', '用完可续'],
+    ctaLabel: '选择个人经济版',
   },
   {
-    id: 'ultra',
-    name: 'Knowly Ultra',
-    description: '适合高频会议、高频 AI 通话和需要 AI 助理跟进的团队。',
-    highlight: '更多时长 + AI 助理',
+    id: 'travel',
+    name: '个人旅行畅用版',
+    badge: '旅行推荐',
+    price: '¥99',
+    priceSuffix: '/10天',
+    description: '适合旅行、展会和短期外派的密集现场翻译。',
     icon: Sparkles,
-    services: [
-      { icon: Languages, label: '翻译时长', value: '40 小时 / 月' },
-      { icon: PhoneCall, label: 'AI通话', value: '12 小时 / 月' },
-      { icon: Bot, label: 'AI 助理', value: '无限次对话' },
+    entitlements: [
+      { icon: Languages, label: '面对面 / 同声传译 / 音频通话', value: '40 小时' },
+      { icon: Video, label: '视频通话', value: '赠送 4 小时' },
+      { icon: Camera, label: '拍照翻译', value: '不限量' },
     ],
-    billings: [
-      { id: 'renew', label: '连续包月', price: 'Rp 179.000', suffix: '/ 月', helper: '自动续费，可随时取消', badge: '省 10%' },
-      { id: 'monthly', label: '月付', price: 'Rp 199.000', suffix: '/ 月', helper: '单月购买，不自动续费' },
-      { id: 'yearly', label: '年付', price: 'Rp 1.908.000', suffix: '/ 年', helper: '折合 Rp 159.000 / 月', badge: '省 20%' },
+    features: ['翻译额度更高', '适合短期集中使用'],
+    ctaLabel: '选择旅行畅用版',
+  },
+  {
+    id: 'enterprise',
+    name: '企业版',
+    badge: '团队方案',
+    price: '定制报价',
+    priceSuffix: '¥3000/月起',
+    description: '适合需要统一管理语言资产和团队记录的公司。',
+    icon: Building2,
+    entitlements: [],
+    features: [
+      '管理员账号和团队子账号',
+      '团队统一配置术语库及场景',
+      '历史记录和纪要共享',
+      '支持大型线上线下会议字幕同步翻译',
+      '企业内外均可使用',
+      '其他需求定制请与销售沟通',
     ],
-    benefits: ['包含 Pro 全部权益', '高频翻译与 AI 通话额度', '无限量AI助理使用', '优先体验新模型能力'],
+    ctaLabel: '立即咨询',
   },
 ];
-
-const DEFAULT_BILLING: Record<PlanId, BillingId> = {
-  pro: 'monthly',
-  ultra: 'monthly',
-};
 
 const PLAN_STYLE: Record<
   PlanId,
   {
     card: string;
-    tabActive: string;
-    tabInactive: string;
-    tabIcon: string;
-    title: string;
-    highlight: string;
-    recommendation: string;
+    badge: string;
+    iconWrap: string;
+    icon: string;
+    price: string;
     body: string;
-    service: string;
-    serviceIcon: string;
-    billingSelected: string;
-    billingIdle: string;
-    muted: string;
-    panel: string;
-    shield: string;
+    entitlement: string;
+    entitlementIcon: string;
+    feature: string;
     check: string;
     cta: string;
   }
 > = {
-  pro: {
-    card: 'border border-blue-100 bg-white text-gray-950 shadow-sm',
-    tabActive: 'bg-white text-[#2D63FF] shadow-sm ring-1 ring-blue-100',
-    tabInactive: 'text-gray-500 active:bg-white/70',
-    tabIcon: 'text-[#2D63FF]',
-    title: 'text-[#2D63FF]',
-    highlight: 'bg-blue-50 text-[#2D63FF]',
-    recommendation: 'bg-blue-50 text-[#2D63FF]',
-    body: 'text-gray-600',
-    service: 'bg-blue-50/80',
-    serviceIcon: 'text-[#2D63FF]',
-    billingSelected: 'border-[#2D63FF] bg-blue-50 text-gray-950',
-    billingIdle: 'border-gray-200 bg-white text-gray-950',
-    muted: 'text-gray-500',
-    panel: 'bg-gray-50',
-    shield: 'text-[#2D63FF]',
-    check: 'text-[#2D63FF]',
-    cta: 'bg-[#2D63FF] text-white active:bg-blue-700',
+  'personal-monthly': {
+    card: 'border-blue-100 bg-white text-gray-950 shadow-sm',
+    badge: 'bg-blue-50 text-blue-700',
+    iconWrap: 'bg-blue-50 text-blue-600',
+    icon: 'text-blue-600',
+    price: 'text-blue-600',
+    body: 'text-gray-500',
+    entitlement: 'bg-blue-50/80 text-gray-900',
+    entitlementIcon: 'text-blue-600',
+    feature: 'text-gray-600',
+    check: 'text-blue-600',
+    cta: 'bg-blue-600 text-white active:bg-blue-700',
   },
-  ultra: {
-    card: 'bg-zinc-950 text-white shadow-sm',
-    tabActive: 'bg-zinc-950 text-white shadow-sm',
-    tabInactive: 'text-gray-500 active:bg-white/70',
-    tabIcon: 'text-amber-300',
-    title: 'text-amber-100',
-    highlight: 'bg-amber-300/15 text-amber-100',
-    recommendation: 'bg-amber-100 text-amber-800',
+  travel: {
+    card: 'border-emerald-100 bg-white text-gray-950 shadow-sm',
+    badge: 'bg-emerald-50 text-emerald-700',
+    iconWrap: 'bg-emerald-50 text-emerald-600',
+    icon: 'text-emerald-600',
+    price: 'text-emerald-600',
+    body: 'text-gray-500',
+    entitlement: 'bg-emerald-50/80 text-gray-900',
+    entitlementIcon: 'text-emerald-600',
+    feature: 'text-gray-600',
+    check: 'text-emerald-600',
+    cta: 'bg-emerald-600 text-white active:bg-emerald-700',
+  },
+  enterprise: {
+    card: 'border-zinc-900 bg-zinc-950 text-white shadow-sm',
+    badge: 'bg-amber-100 text-amber-800',
+    iconWrap: 'bg-white/10 text-amber-200',
+    icon: 'text-amber-200',
+    price: 'text-amber-100',
     body: 'text-zinc-300',
-    service: 'bg-white/10',
-    serviceIcon: 'text-amber-200',
-    billingSelected: 'border-amber-200 bg-amber-50 text-zinc-950',
-    billingIdle: 'border-white/10 bg-white/5 text-white',
-    muted: 'text-zinc-400',
-    panel: 'bg-white/10',
-    shield: 'text-amber-200',
+    entitlement: 'bg-white/10 text-white',
+    entitlementIcon: 'text-amber-200',
+    feature: 'text-zinc-200',
     check: 'text-amber-200',
     cta: 'bg-amber-200 text-zinc-950 active:bg-amber-100',
   },
 };
 
-export function SubscriptionScreen({ onBack }: SubscriptionScreenProps) {
-  const [activePlanId, setActivePlanId] = useState<PlanId>('pro');
-  const [selectedBilling, setSelectedBilling] = useState<Record<PlanId, BillingId>>(DEFAULT_BILLING);
-  const activePlan = PLANS.find((plan) => plan.id === activePlanId) ?? PLANS[0];
-  const activeBilling = activePlan.billings.find((item) => item.id === selectedBilling[activePlan.id]) ?? activePlan.billings[0];
-  const ActivePlanIcon = activePlan.icon;
-  const styles = PLAN_STYLE[activePlan.id];
+export function FreeUsageCard() {
+  return (
+    <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 text-sm font-semibold text-gray-950">
+            <Crown className="h-4 w-4 text-blue-600" />
+            免费用量
+          </div>
+          <p className="mt-2 text-2xl font-bold text-gray-950">{FREE_MINUTES_LEFT} 分钟</p>
+          <p className="mt-1 text-xs text-gray-500">免费额度 {FREE_MINUTES_TOTAL} 分钟，已用 {FREE_MINUTES_USED} 分钟</p>
+        </div>
+        <span className="shrink-0 rounded-full bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700">本月</span>
+      </div>
+
+      <div className="mt-4">
+        <div className="h-2 overflow-hidden rounded-full bg-gray-100">
+          <div className="h-full rounded-full bg-blue-600" style={{ width: `${FREE_USAGE_PERCENT}%` }} />
+        </div>
+        <div className="mt-3 flex items-center gap-2 rounded-xl bg-blue-50 px-3 py-2 text-xs text-blue-700">
+          <Sparkles className="h-4 w-4 shrink-0" />
+          <span>升级会员解锁更多时长</span>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+interface SubscriptionPlansProps {
+  focusPlanId?: PlanId;
+  onPlanFocused?: () => void;
+}
+
+export function SubscriptionPlans({ focusPlanId, onPlanFocused }: SubscriptionPlansProps = {}) {
+  const focusPlanRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!focusPlanId || !focusPlanRef.current) return;
+
+    window.requestAnimationFrame(() => {
+      focusPlanRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      onPlanFocused?.();
+    });
+  }, [focusPlanId, onPlanFocused]);
 
   return (
-    <motion.div initial={{ opacity: 0, x: 16 }} animate={{ opacity: 1, x: 0 }} className="min-h-full bg-slate-50">
-      <ScreenHeader title="会员订阅" subtitle="选择 Pro 或 Ultra，解锁翻译、AI通话和 AI 助理" onBack={onBack} />
+    <section className="space-y-3" aria-label="订阅套餐">
+      <div className="flex items-center justify-between px-1">
+        <h2 className="text-xs font-semibold uppercase tracking-widest text-gray-500">订阅套餐</h2>
+        <span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs font-semibold text-gray-600">3 种方案</span>
+      </div>
 
-      <div className="p-4 space-y-4">
-        <div className="grid grid-cols-2 gap-2 rounded-2xl border border-gray-200 bg-gray-100 p-1.5 shadow-sm" role="tablist" aria-label="会员套餐">
-          {PLANS.map((plan) => {
-            const selected = plan.id === activePlanId;
-            const PlanIcon = plan.icon;
-            const tabStyle = PLAN_STYLE[plan.id];
+      {PLANS.map((plan, index) => {
+        const styles = PLAN_STYLE[plan.id];
+        const PlanIcon = plan.icon;
 
-            return (
-              <button
-                key={plan.id}
-                type="button"
-                role="tab"
-                aria-selected={selected}
-                onClick={() => setActivePlanId(plan.id)}
-                className={cn('min-h-16 rounded-xl px-3 py-2.5 text-left transition active:scale-[0.99]', selected ? tabStyle.tabActive : tabStyle.tabInactive)}
-              >
-                <div className="flex items-center gap-2 text-sm font-bold">
-                  <PlanIcon className={cn('w-4 h-4', selected ? tabStyle.tabIcon : 'text-gray-400')} />
-                  {plan.name.replace('Knowly ', '')}
-                </div>
-                <div className={cn('mt-1 text-xs font-medium leading-snug', selected ? '' : 'text-gray-500')}>{plan.highlight}</div>
-              </button>
-            );
-          })}
-        </div>
-
-        <motion.section
-          key={activePlan.id}
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          className={cn('rounded-2xl p-4', styles.card)}
-        >
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className={cn('flex items-center gap-2 text-sm font-semibold', styles.title)}>
-                    <ActivePlanIcon className="w-4 h-4" />
-                    {activePlan.name}
-                  </div>
-                  <div className={cn('mt-2 inline-flex rounded-full px-2.5 py-1 text-xs font-semibold', styles.highlight)}>
-                    {activePlan.highlight}
-                  </div>
-                </div>
-                {activePlan.id === 'ultra' && (
-                  <span className={cn('rounded-full px-2.5 py-1 text-xs font-semibold', styles.recommendation)}>推荐</span>
-                )}
+        return (
+          <motion.article
+            key={plan.id}
+            ref={plan.id === focusPlanId ? focusPlanRef : undefined}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: index * 0.04 }}
+            className={cn('rounded-2xl border p-4', styles.card)}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <span className={cn('inline-flex rounded-full px-2.5 py-1 text-xs font-semibold', styles.badge)}>{plan.badge}</span>
+                <h3 className="mt-3 text-lg font-bold leading-tight">{plan.name}</h3>
+                <p className={cn('mt-1 text-sm leading-relaxed', styles.body)}>{plan.description}</p>
               </div>
+              <div className={cn('flex h-11 w-11 shrink-0 items-center justify-center rounded-xl', styles.iconWrap)}>
+                <PlanIcon className={cn('h-5 w-5', styles.icon)} />
+              </div>
+            </div>
 
-              <p className={cn('mt-3 text-sm leading-relaxed', styles.body)}>{activePlan.description}</p>
+            <div className="mt-4 flex items-end gap-1.5">
+              <span className={cn('text-3xl font-black tracking-tight', styles.price)}>{plan.price}</span>
+              {plan.priceSuffix && <span className={cn('pb-1 text-sm font-semibold', styles.body)}>{plan.priceSuffix}</span>}
+            </div>
 
+            {plan.entitlements.length > 0 && (
               <div className="mt-4 grid gap-2">
-                {activePlan.services.map((service) => {
-                  const ServiceIcon = service.icon;
+                {plan.entitlements.map((item) => {
+                  const ItemIcon = item.icon;
 
                   return (
-                    <div key={service.label} className={cn('flex items-center justify-between rounded-xl px-3 py-2.5', styles.service)}>
-                      <div className="flex items-center gap-2 text-sm font-medium">
-                        <ServiceIcon className={cn('w-4 h-4', styles.serviceIcon)} />
-                        <span>{service.label}</span>
+                    <div key={item.label} className={cn('flex items-center justify-between gap-3 rounded-xl px-3 py-2.5', styles.entitlement)}>
+                      <div className="flex min-w-0 items-center gap-2">
+                        <ItemIcon className={cn('h-4 w-4 shrink-0', styles.entitlementIcon)} />
+                        <span className="truncate text-sm font-medium">{item.label}</span>
                       </div>
-                      <span className="text-sm font-bold tabular-nums">{service.value}</span>
+                      <span className="shrink-0 text-sm font-bold tabular-nums">{item.value}</span>
                     </div>
                   );
                 })}
               </div>
+            )}
 
-              <div className="mt-4 space-y-2">
-                {activePlan.billings.map((billing) => {
-                  const selected = activeBilling.id === billing.id;
-
-                  return (
-                    <button
-                      key={billing.id}
-                      type="button"
-                      onClick={() => setSelectedBilling((current) => ({ ...current, [activePlan.id]: billing.id }))}
-                      className={cn(
-                        'min-h-16 w-full rounded-xl border p-3 text-left transition active:scale-[0.99]',
-                        selected ? styles.billingSelected : styles.billingIdle,
-                      )}
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="text-sm font-semibold">{billing.label}</span>
-                            {billing.badge && (
-                              <span
-                                className={cn(
-                                  'rounded-full px-2 py-0.5 text-[11px] font-bold',
-                                  activePlan.id === 'ultra'
-                                    ? selected ? 'bg-amber-100 text-amber-800' : 'bg-amber-200/15 text-amber-100'
-                                    : selected ? 'bg-blue-100 text-[#2D63FF]' : 'bg-blue-50 text-[#2D63FF]',
-                                )}
-                              >
-                                {billing.badge}
-                              </span>
-                            )}
-                          </div>
-                          <p className={cn('mt-1 text-xs', selected ? 'text-gray-500' : styles.muted)}>{billing.helper}</p>
-                        </div>
-                        <div className="shrink-0 text-right">
-                          <div className="text-base font-bold tabular-nums">{billing.price}</div>
-                          <div className={cn('text-xs', selected ? 'text-gray-500' : styles.muted)}>{billing.suffix}</div>
-                        </div>
-                      </div>
-                    </button>
-                  );
-                })}
+            {plan.features.length > 0 && (
+              <div className="mt-4 space-y-2.5">
+                {plan.features.map((feature) => (
+                  <div key={feature} className={cn('flex items-start gap-2.5 text-sm leading-relaxed', styles.feature)}>
+                    <CheckCircle2 className={cn('mt-0.5 h-4 w-4 shrink-0', styles.check)} />
+                    <span>{feature}</span>
+                  </div>
+                ))}
               </div>
+            )}
 
-              <div className={cn('mt-4 rounded-xl p-3', styles.panel)}>
-                <div className="flex items-center gap-2 text-sm font-semibold">
-                  <ShieldCheck className={cn('w-4 h-4', styles.shield)} />
-                  会员权益
-                </div>
-                <div className="mt-3 space-y-2.5">
-                  {activePlan.benefits.map((benefit) => (
-                    <div key={benefit} className={cn('flex items-center gap-2.5 text-sm', activePlan.id === 'ultra' ? 'text-zinc-200' : 'text-gray-700')}>
-                      <CheckCircle2 className={cn('w-4 h-4 shrink-0', styles.check)} />
-                      <span>{benefit}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
+            <button type="button" className={cn('mt-4 min-h-12 w-full rounded-xl text-sm font-semibold active:scale-[0.99]', styles.cta)}>
+              {plan.ctaLabel}
+            </button>
+          </motion.article>
+        );
+      })}
+    </section>
+  );
+}
 
-              <button
-                type="button"
-                className={cn('mt-4 min-h-12 w-full rounded-xl text-sm font-semibold active:scale-[0.99]', styles.cta)}
-              >
-                选择 {activePlan.name.replace('Knowly ', '')} · {activeBilling.label}
-              </button>
-        </motion.section>
+export function SubscriptionScreen({ onBack }: SubscriptionScreenProps) {
+  return (
+    <motion.div initial={{ opacity: 0, x: 16 }} animate={{ opacity: 1, x: 0 }} className="min-h-full bg-slate-50">
+      <ScreenHeader title="会员订阅" subtitle="订阅套餐与企业方案" onBack={onBack} />
+
+      <div className="space-y-4 p-4">
+        <SubscriptionPlans />
       </div>
     </motion.div>
   );
