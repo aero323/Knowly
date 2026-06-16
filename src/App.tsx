@@ -150,6 +150,10 @@ export default function App() {
     });
   }
 
+  function updateTerm(term: TermEntry) {
+    setTerms((current) => current.map((item) => item.id === term.id ? term : item));
+  }
+
   function toggleVisibleScene(sceneId: string) {
     setVisibleSceneIds((current) => {
       if (current.includes(sceneId)) return current.filter((id) => id !== sceneId);
@@ -219,6 +223,7 @@ export default function App() {
           profileIndustryId={profile.industryId}
           scenes={scenes}
           visibleSceneIds={visibleSceneIds}
+          terms={terms}
           history={translationHistory}
           showHistory={generalSettings.showHistory}
           historyLimit={generalSettings.historyLimit}
@@ -355,6 +360,8 @@ export default function App() {
         onOpenScreen={pushScreen}
         onUpdateProfile={setProfile}
         onUpdateGeneralSettings={setGeneralSettings}
+        onAddTerm={addTerm}
+        onUpdateTerm={updateTerm}
         onClearHistory={clearTranslationHistory}
         onToggleVisibleScene={toggleVisibleScene}
         onSaveCustomIndustry={saveCustomIndustry}

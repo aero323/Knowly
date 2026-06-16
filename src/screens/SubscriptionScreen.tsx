@@ -59,7 +59,7 @@ const PLANS: SubscriptionPlan[] = [
     description: '适合旅行、展会和短期外派的密集现场翻译。',
     icon: Sparkles,
     entitlements: [
-      { icon: Languages, label: '面对面 / 同声传译', value: '40 小时' },
+      { icon: Languages, label: '面对面 / 同声传译 / 音频通话', value: '40 小时' },
       { icon: Video, label: '视频通话', value: '赠送 4 小时' },
       { icon: Camera, label: '拍照翻译', value: '不限量' },
     ],

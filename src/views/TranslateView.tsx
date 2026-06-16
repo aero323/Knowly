@@ -1,6 +1,5 @@
 import {
   Anchor,
-  ArrowRight,
   Building2,
   Camera,
   FileText,
@@ -17,7 +16,7 @@ import { motion } from 'motion/react';
 import { type ChangeEvent, useEffect, useRef, useState } from 'react';
 import { HoverNote } from '@/components/HoverNote';
 import { cn } from '@/lib/utils';
-import type { AppScreen, HistoryLimit, ScenePrompt, TranslationSession } from '@/types';
+import type { AppScreen, HistoryLimit, ScenePrompt, TermEntry, TranslationSession } from '@/types';
 
 const knowlyLogoUrl = new URL('../../assets/brand/knowly-logo.png', import.meta.url).href;
 
@@ -61,13 +60,14 @@ interface TranslateViewProps {
   profileIndustryId: string;
   scenes: ScenePrompt[];
   visibleSceneIds: string[];
+  terms: TermEntry[];
   history: TranslationSession[];
   showHistory: boolean;
   historyLimit: HistoryLimit;
   onOpenScreen: (screen: AppScreen) => void;
 }
 
-export function TranslateView({ conciseDefault, profileIndustryId, scenes, visibleSceneIds, history, showHistory, historyLimit, onOpenScreen }: TranslateViewProps) {
+export function TranslateView({ conciseDefault, profileIndustryId, scenes, visibleSceneIds, terms, history, showHistory, historyLimit, onOpenScreen }: TranslateViewProps) {
   const photoCameraInputRef = useRef<HTMLInputElement>(null);
   const [activeScene, setActiveScene] = useState<string>('general');
   const [useConciseMode, setUseConciseMode] = useState(conciseDefault);
@@ -211,7 +211,6 @@ export function TranslateView({ conciseDefault, profileIndustryId, scenes, visib
               className="min-h-[60px] shrink-0 border-l border-blue-100 bg-white/75 px-3 text-xs font-semibold text-blue-700 active:bg-blue-100 transition-colors flex items-center gap-1"
             >
               输入大会码
-              <ArrowRight className="h-3.5 w-3.5" />
             </button>
           </div>
         </section>
@@ -271,7 +270,7 @@ export function TranslateView({ conciseDefault, profileIndustryId, scenes, visib
               </button>
             </div>
             {useTermsLibrary && (
-              <div className="flex flex-wrap gap-2">
+              <div className="max-h-[7.5rem] overflow-hidden flex flex-wrap gap-2">
                 <button
                   type="button"
                   onClick={() => onOpenScreen({ type: 'profile-detail', detail: 'terms' })}
@@ -280,6 +279,16 @@ export function TranslateView({ conciseDefault, profileIndustryId, scenes, visib
                   <Plus className="w-3.5 h-3.5" />
                   自定义术语库
                 </button>
+                {terms.map((term) => (
+                  <button
+                    key={term.id}
+                    type="button"
+                    onClick={() => onOpenScreen({ type: 'profile-detail', detail: 'terms' })}
+                    className="min-h-9 max-w-full rounded-full border border-blue-100 bg-blue-50 px-3 text-[12px] font-medium leading-5 text-blue-700 active:bg-blue-100 transition-colors"
+                  >
+                    <span className="block truncate">{term.zh}/{term.idText}</span>
+                  </button>
+                ))}
               </div>
             )}
           </div>

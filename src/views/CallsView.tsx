@@ -96,7 +96,7 @@ export function CallsView({ onOpenScreen, onOpenEnterpriseSubscription }: CallsV
       <div className="p-6 space-y-8 pb-24">
         <section className="bg-white rounded-3xl p-6 shadow-sm border border-gray-200 space-y-6">
           <div className="text-center space-y-1">
-            <h2 className="text-xs font-semibold text-gray-500">我的会议 ID</h2>
+            <h2 className="text-xs font-semibold text-gray-500">我的通话 ID</h2>
             <div className="flex items-center justify-center gap-2">
               <span className="text-3xl font-black text-gray-950 tracking-wider font-mono">{inviteCode}</span>
               <button
@@ -106,12 +106,12 @@ export function CallsView({ onOpenScreen, onOpenEnterpriseSubscription }: CallsV
                   window.setTimeout(() => setCopied(false), 1200);
                 }}
                 className="w-10 h-10 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-full transition-colors flex items-center justify-center"
-                aria-label="复制会议 ID"
+                aria-label="复制通话 ID"
               >
                 <Copy className="w-5 h-5" />
               </button>
             </div>
-            <p className="text-xs leading-relaxed text-gray-500">复制会议ID发送给他人 他人可通过App或网页端加入</p>
+            <p className="text-xs leading-relaxed text-gray-500">复制通话ID发送给他人 他人可通过App或网页端加入</p>
             {copied && <p className="text-xs text-emerald-600">已复制</p>}
           </div>
 
@@ -151,7 +151,7 @@ export function CallsView({ onOpenScreen, onOpenEnterpriseSubscription }: CallsV
           <div className="flex gap-2">
             <input
               type="text"
-              placeholder="输入会议 ID"
+              placeholder="输入通话 ID"
               value={joinCode}
               onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
               className="min-h-12 flex-1 bg-white border border-gray-200 rounded-xl px-4 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent uppercase font-mono tracking-wider text-base"
@@ -252,7 +252,7 @@ export function CallsView({ onOpenScreen, onOpenEnterpriseSubscription }: CallsV
                     setContactIdInput(event.target.value.toUpperCase());
                     setAddedContactId('');
                   }}
-                  placeholder="粘贴会议 ID 或联系人 ID"
+                  placeholder="粘贴通话 ID 或联系人 ID"
                   className="min-h-12 w-full rounded-xl border border-gray-200 bg-gray-50 px-4 font-mono text-base tracking-wider outline-none focus:border-blue-500 focus:bg-white"
                 />
               </label>

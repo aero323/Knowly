@@ -97,6 +97,7 @@ const REMOTE_PROFILES: Record<string, { name: string; role: string; image: strin
 
 const CAPTION_MODES = [
   { id: 'both', label: '双语字幕' },
+  { id: 'source', label: '只看原文' },
   { id: 'target', label: '只看译文' },
 ] as const;
 

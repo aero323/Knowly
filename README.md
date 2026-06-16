@@ -19,6 +19,21 @@
    http://localhost:3000
    ```
 
+## Desktop Development
+
+1. Install dependencies:
+   ```bash
+   npm install
+   ```
+2. Start the Electron desktop app:
+   ```bash
+   npm run dev:desktop
+   ```
+3. Build the desktop bundles:
+   ```bash
+   npm run build:desktop
+   ```
+
 ## Notes
 
 - This app no longer depends on the original hosted AI template or provider SDK.
