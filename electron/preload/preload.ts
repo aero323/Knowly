@@ -13,6 +13,7 @@ const api: KnowlyDesktopApi = {
   hideOverlay: () => ipcRenderer.invoke(DESKTOP_IPC.overlayHide),
   getOverlaySettings: () => ipcRenderer.invoke(DESKTOP_IPC.overlaySettingsGet),
   setOverlaySettings: (settings: Partial<CaptionOverlaySettings>) => ipcRenderer.invoke(DESKTOP_IPC.overlaySettingsSet, settings),
+  toggleOverlayFullscreen: () => ipcRenderer.invoke(DESKTOP_IPC.overlayFullscreenToggle),
   startCaptionMockStream: (options: StartCaptionStreamOptions) => ipcRenderer.invoke(DESKTOP_IPC.captionsStart, options),
   pauseCaptionMockStream: () => ipcRenderer.invoke(DESKTOP_IPC.captionsPause),
   resumeCaptionMockStream: () => ipcRenderer.invoke(DESKTOP_IPC.captionsResume),

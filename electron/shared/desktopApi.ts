@@ -7,6 +7,7 @@ export const DESKTOP_IPC = {
   overlaySettingsGet: 'desktop:overlay-settings-get',
   overlaySettingsSet: 'desktop:overlay-settings-set',
   overlaySettingsChanged: 'desktop:overlay-settings-changed',
+  overlayFullscreenToggle: 'desktop:overlay-fullscreen-toggle',
   captionsStart: 'desktop:captions-start',
   captionsPause: 'desktop:captions-pause',
   captionsResume: 'desktop:captions-resume',
@@ -16,7 +17,6 @@ export const DESKTOP_IPC = {
   captionsLine: 'desktop:captions-line',
 } as const;
 
-export type CaptionDock = 'left' | 'right';
 export type DesktopSourceLanguage = 'auto' | 'id' | 'zh' | 'en';
 export type DesktopTargetLanguage = 'zh' | 'id' | 'en';
 
@@ -28,12 +28,14 @@ export interface DesktopRuntimeInfo {
 
 export interface CaptionOverlaySettings {
   visible: boolean;
-  dock: CaptionDock;
   opacity: number;
   fontScale: number;
   showOriginal: boolean;
   showTranslation: boolean;
   compact: boolean;
+  scrollMode: boolean;
+  visibleLineCount: number;
+  fullscreen: boolean;
 }
 
 export interface StartCaptionStreamOptions {
@@ -60,6 +62,7 @@ export interface KnowlyDesktopApi {
   hideOverlay: () => Promise<CaptionOverlaySettings>;
   getOverlaySettings: () => Promise<CaptionOverlaySettings>;
   setOverlaySettings: (settings: Partial<CaptionOverlaySettings>) => Promise<CaptionOverlaySettings>;
+  toggleOverlayFullscreen: () => Promise<CaptionOverlaySettings>;
   startCaptionMockStream: (options: StartCaptionStreamOptions) => Promise<CaptionStreamState>;
   pauseCaptionMockStream: () => Promise<CaptionStreamState>;
   resumeCaptionMockStream: () => Promise<CaptionStreamState>;

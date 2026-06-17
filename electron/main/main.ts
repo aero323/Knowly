@@ -3,7 +3,6 @@ import path from 'node:path';
 import { SIMULTANEOUS_CAPTIONS } from '../../src/data/mockData';
 import {
   DESKTOP_IPC,
-  type CaptionDock,
   type CaptionOverlaySettings,
   type CaptionStreamState,
   type DesktopCaptionLine,
@@ -14,6 +13,9 @@ const MAIN_WINDOW_WIDTH = 1240;
 const MAIN_WINDOW_HEIGHT = 820;
 const OVERLAY_WIDTH = 430;
 const OVERLAY_HEIGHT = 270;
+const OVERLAY_SCROLL_MIN_HEIGHT = 430;
+const OVERLAY_SCROLL_LINE_HEIGHT = 18;
+const OVERLAY_MARGIN = 22;
 
 let mainWindow: BrowserWindow | null = null;
 let overlayWindow: BrowserWindow | null = null;
@@ -23,12 +25,14 @@ let isQuitting = false;
 
 let overlaySettings: CaptionOverlaySettings = {
   visible: false,
-  dock: 'right',
   opacity: 0.9,
   fontScale: 1,
   showOriginal: true,
   showTranslation: true,
   compact: false,
+  scrollMode: false,
+  visibleLineCount: 5,
+  fullscreen: false,
 };
 
 let captionState: CaptionStreamState = {
@@ -116,16 +120,38 @@ function createMainWindow() {
   loadRenderer(mainWindow, 'desktop.html');
 }
 
-function positionOverlay(dock: CaptionDock = overlaySettings.dock) {
+function overlayHeight() {
+  if (!overlaySettings.scrollMode) return OVERLAY_HEIGHT;
+  return OVERLAY_SCROLL_MIN_HEIGHT + (overlaySettings.visibleLineCount - 5) * OVERLAY_SCROLL_LINE_HEIGHT;
+}
+
+function defaultOverlayBounds() {
+  const { workArea } = screen.getPrimaryDisplay();
+  const height = overlayHeight();
+  const width = OVERLAY_WIDTH;
+  return {
+    x: workArea.x + workArea.width - width - OVERLAY_MARGIN,
+    y: workArea.y + Math.round((workArea.height - height) * 0.24),
+    width,
+    height,
+  };
+}
+
+function positionOverlay() {
   if (!overlayWindow || overlayWindow.isDestroyed()) return;
 
-  const { workArea } = screen.getPrimaryDisplay();
-  const x = dock === 'right'
-    ? workArea.x + workArea.width - OVERLAY_WIDTH - 22
-    : workArea.x + 22;
-  const y = workArea.y + Math.round((workArea.height - OVERLAY_HEIGHT) * 0.24);
+  overlayWindow.setBounds(defaultOverlayBounds());
+}
 
-  overlayWindow.setBounds({ x, y, width: OVERLAY_WIDTH, height: OVERLAY_HEIGHT });
+function resizeOverlayForMode() {
+  if (!overlayWindow || overlayWindow.isDestroyed()) return;
+  if (overlayWindow.isFullScreen()) return;
+
+  const currentBounds = overlayWindow.getBounds();
+  overlayWindow.setBounds({
+    ...currentBounds,
+    height: overlayHeight(),
+  });
 }
 
 function createOverlayWindow() {
@@ -136,7 +162,7 @@ function createOverlayWindow() {
     minHeight: 220,
     frame: false,
     transparent: true,
-    resizable: false,
+    resizable: true,
     movable: true,
     alwaysOnTop: true,
     skipTaskbar: true,
@@ -153,7 +179,16 @@ function createOverlayWindow() {
 
   overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   overlayWindow.setAlwaysOnTop(true, 'floating');
+  overlayWindow.on('enter-full-screen', () => {
+    overlaySettings = { ...overlaySettings, fullscreen: true };
+    broadcastOverlaySettings();
+  });
+  overlayWindow.on('leave-full-screen', () => {
+    overlaySettings = { ...overlaySettings, fullscreen: false };
+    broadcastOverlaySettings();
+  });
   overlayWindow.on('closed', () => {
+    overlaySettings = { ...overlaySettings, fullscreen: false };
     overlayWindow = null;
   });
   attachExternalLinkGuard(overlayWindow);
@@ -163,7 +198,6 @@ function createOverlayWindow() {
 
 function showOverlay() {
   if (!overlayWindow || overlayWindow.isDestroyed()) createOverlayWindow();
-  positionOverlay(overlaySettings.dock);
   overlaySettings = { ...overlaySettings, visible: true };
   overlayWindow?.showInactive();
   broadcastOverlaySettings();
@@ -171,29 +205,55 @@ function showOverlay() {
 }
 
 function hideOverlay() {
-  overlaySettings = { ...overlaySettings, visible: false };
+  if (overlayWindow && !overlayWindow.isDestroyed() && overlayWindow.isFullScreen()) {
+    overlayWindow.setFullScreen(false);
+  }
+  overlaySettings = { ...overlaySettings, visible: false, fullscreen: false };
   overlayWindow?.hide();
   broadcastOverlaySettings();
   return overlaySettings;
 }
 
 function setOverlaySettings(settings: Partial<CaptionOverlaySettings>) {
-  const previousDock = overlaySettings.dock;
+  const previousScrollMode = overlaySettings.scrollMode;
+  const previousVisibleLineCount = overlaySettings.visibleLineCount;
   overlaySettings = {
     ...overlaySettings,
     ...settings,
     opacity: clamp(settings.opacity ?? overlaySettings.opacity, 0.55, 1),
     fontScale: clamp(settings.fontScale ?? overlaySettings.fontScale, 0.86, 1.32),
+    visibleLineCount: Math.round(clamp(settings.visibleLineCount ?? overlaySettings.visibleLineCount, 3, 9)),
   };
 
   if (overlaySettings.visible) {
     if (!overlayWindow || overlayWindow.isDestroyed()) createOverlayWindow();
-    if (previousDock !== overlaySettings.dock || settings.visible) positionOverlay(overlaySettings.dock);
+    if (
+      previousScrollMode !== overlaySettings.scrollMode
+      || previousVisibleLineCount !== overlaySettings.visibleLineCount
+    ) {
+      resizeOverlayForMode();
+    }
     overlayWindow?.showInactive();
+    if (typeof settings.fullscreen === 'boolean') {
+      overlayWindow?.setFullScreen(settings.fullscreen);
+    }
   } else {
     overlayWindow?.hide();
   }
 
+  broadcastOverlaySettings();
+  return overlaySettings;
+}
+
+function toggleOverlayFullscreen() {
+  if (!overlayWindow || overlayWindow.isDestroyed()) createOverlayWindow();
+  if (!overlayWindow || overlayWindow.isDestroyed()) return overlaySettings;
+
+  overlaySettings = { ...overlaySettings, visible: true };
+  overlayWindow.show();
+  overlayWindow.setFullScreen(!overlayWindow.isFullScreen());
+  overlayWindow.setAlwaysOnTop(true, 'floating');
+  overlaySettings = { ...overlaySettings, fullscreen: overlayWindow.isFullScreen() };
   broadcastOverlaySettings();
   return overlaySettings;
 }
@@ -298,6 +358,7 @@ function setupIpc() {
   ipcMain.handle(DESKTOP_IPC.overlayHide, () => hideOverlay());
   ipcMain.handle(DESKTOP_IPC.overlaySettingsGet, () => overlaySettings);
   ipcMain.handle(DESKTOP_IPC.overlaySettingsSet, (_event, settings: Partial<CaptionOverlaySettings>) => setOverlaySettings(settings));
+  ipcMain.handle(DESKTOP_IPC.overlayFullscreenToggle, () => toggleOverlayFullscreen());
   ipcMain.handle(DESKTOP_IPC.captionsStart, (_event, options: StartCaptionStreamOptions) => startCaptionStream(options));
   ipcMain.handle(DESKTOP_IPC.captionsPause, () => pauseCaptionStream());
   ipcMain.handle(DESKTOP_IPC.captionsResume, () => resumeCaptionStream());

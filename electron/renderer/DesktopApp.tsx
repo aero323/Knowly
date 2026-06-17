@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   ArrowLeft,
   ArrowRight,
+  BookOpen,
   Captions,
   Check,
   CheckCircle2,
@@ -15,11 +16,14 @@ import {
   FileText,
   Globe2,
   Handshake,
+  History,
   CircleHelp,
   Languages,
   Link2,
   Loader2,
   LogIn,
+  Maximize2,
+  MessageSquareText,
   Mic,
   MicOff,
   PanelRight,
@@ -28,10 +32,14 @@ import {
   Phone,
   PhoneOff,
   Play,
+  Plus,
   Radio,
   Settings2,
   ShieldCheck,
   Smartphone,
+  ScrollText,
+  Type,
+  Upload,
   UserPlus,
   UserRound,
   Video,
@@ -40,11 +48,12 @@ import {
   Volume2,
   X,
 } from 'lucide-react';
-import { CONTACTS, SCENE_SCRIPTS, SIMULTANEOUS_CAPTIONS, makeSummary } from '@/data/mockData';
+import { CONTACTS, DEFAULT_TERMS, SCENES, SCENE_SCRIPTS, SIMULTANEOUS_CAPTIONS, makeSummary } from '@/data/mockData';
 import appDownloadQrUrl from '../../assets/brand/knowly-app-download-qr.png';
 import knowlyLogoUrl from '../../assets/brand/knowly-logo.png';
 import { cn } from '@/lib/utils';
-import type { CallSession, ConversationTurn, SessionSummary } from '@/types';
+import { readStoredValue, writeStoredValue } from '@/lib/storage';
+import type { CallSession, ConversationTurn, SessionSummary, TermEntry } from '@/types';
 import type {
   CaptionOverlaySettings,
   CaptionStreamState,
@@ -54,10 +63,36 @@ import type {
   StartCaptionStreamOptions,
 } from '../shared/desktopApi';
 
-type DesktopView = 'call' | 'captions';
+type DesktopView = 'call' | 'captions' | 'preferences';
 type DesktopCallStage = 'home' | 'lobby' | 'room' | 'ended';
 type DesktopCallMode = 'voice' | 'video' | 'join' | 'contact';
 type DesktopCaptionMode = 'both' | 'source' | 'target';
+type DesktopTranslationFormality = 'plain' | 'business' | 'formal';
+type DesktopSubtitleSize = 'compact' | 'standard' | 'large';
+
+interface DesktopTranslationPreferences {
+  sourceLanguage: DesktopSourceLanguage;
+  targetLanguage: DesktopTargetLanguage;
+  translationFormality: DesktopTranslationFormality;
+  subtitleSize: DesktopSubtitleSize;
+  showOriginalText: boolean;
+  autoGenerateSummary: boolean;
+  useTermsLibrary: boolean;
+  activeSceneId: string;
+}
+
+interface DesktopCustomScene {
+  id: string;
+  name: string;
+  prompt: string;
+}
+
+interface ReferenceFileState {
+  name: string;
+  size: number;
+  extension: string;
+  uploadedAt: string;
+}
 
 interface DesktopCallDraft {
   mode: DesktopCallMode;
@@ -65,7 +100,113 @@ interface DesktopCallDraft {
   contactId?: string;
 }
 
+type ContactHistorySession = {
+  id: string;
+  title: string;
+  time: string;
+  summary: string;
+  transcript: Array<{ speaker: string; source: string; translated: string }>;
+};
+
 const INVITE_CODE = '7A3-K9W';
+const CAPTION_CONFERENCE_CODE = 'KLY-2026';
+
+const CONTACT_HISTORY = {
+  'new-contact': [
+    {
+      id: 'new-contact-session-1',
+      title: '首次接通确认',
+      time: '刚刚',
+      summary: '已确认对方可正常接听，后续沟通将通过 Knowly 发起。',
+      transcript: [
+        { speaker: '我', source: '你好，先试一下这个新联系人能不能接通。', translated: 'Halo, saya ingin mencoba apakah kontak baru ini bisa tersambung.' },
+        { speaker: '新联系人', source: '可以，我这边已经收到。', translated: 'Bisa, saya sudah menerima panggilannya.' },
+      ],
+    },
+  ],
+  '1': [
+    {
+      id: 'budi-session-1',
+      title: '镍矿交付确认',
+      time: '2 小时前',
+      summary: '双方确认 invoice 与 packing list 今天下午发出，明早继续核船期。',
+      transcript: [
+        { speaker: '我', source: '发票和装箱单今天下午能给吗？', translated: 'Apakah invoice dan packing list bisa dikirim sore ini?' },
+        { speaker: 'Budi', source: 'Bisa, saya kirim sebelum jam lima.', translated: '可以，我会在下午五点前发出。' },
+      ],
+    },
+    {
+      id: 'budi-session-2',
+      title: '付款节点确认',
+      time: '昨天',
+      summary: '已确认 DP 比例按合同执行，但需书面确认最晚到账时间。',
+      transcript: [
+        { speaker: '我', source: 'DP 按合同 30% 走，对吗？', translated: 'DP mengikuti kontrak 30%, betul?' },
+        { speaker: 'Budi', source: 'Ya, tetapi mohon transfer sebelum barang keluar.', translated: '对，但请在货出库前完成付款。' },
+      ],
+    },
+  ],
+  '2': [
+    {
+      id: 'sari-session-1',
+      title: '员工排班沟通',
+      time: '昨天',
+      summary: '确认夜班到岗时间和安全帽要求，已提醒现场登记。',
+      transcript: [
+        { speaker: '我', source: '今天夜班几点到岗？', translated: 'Jam berapa shift malam mulai hari ini?' },
+        { speaker: 'Sari', source: 'Jam tujuh malam, semua harus pakai helm.', translated: '晚上七点，所有人都必须戴安全帽。' },
+      ],
+    },
+  ],
+  '3': [
+    {
+      id: 'adi-session-1',
+      title: '清关资料确认',
+      time: '3 天前',
+      summary: '已核对 DO 文件还差盖章页，待下午补齐后提柜。',
+      transcript: [
+        { speaker: '我', source: '现在还缺哪份文件？', translated: 'Dokumen apa yang masih kurang sekarang?' },
+        { speaker: 'Adi', source: 'Masih kurang halaman stempel untuk DO.', translated: '还差提货单的盖章页。' },
+      ],
+    },
+  ],
+  'web-1': [
+    {
+      id: 'web-1-session-1',
+      title: '网页咨询记录',
+      time: '18 分钟前',
+      summary: '访客通过网页发起咨询，重点询问报价和交期。',
+      transcript: [
+        { speaker: '访客', source: '请问镍矿这批货的交期可以提前吗？', translated: 'Bisa tidak jadwal pengiriman bijih nikel ini dipercepat?' },
+        { speaker: '我', source: '可以先确认港口和付款节点，再给你更准确时间。', translated: 'Kami perlu memastikan pelabuhan dan tahapan pembayaran dulu untuk memberi jadwal yang lebih akurat.' },
+      ],
+    },
+  ],
+  'web-2': [
+    {
+      id: 'web-2-session-1',
+      title: '网页留言跟进',
+      time: '1 小时前',
+      summary: '访客在网页留言，后续将按同一条记录继续跟进。',
+      transcript: [
+        { speaker: '访客', source: '我想补充一下装箱单里的收货地址。', translated: 'Saya ingin menambahkan alamat penerima di packing list.' },
+        { speaker: '我', source: '好的，请发我最新地址，我来帮你补充。', translated: 'Baik, kirim alamat terbaru agar saya bantu perbarui.' },
+      ],
+    },
+  ],
+  'web-3': [
+    {
+      id: 'web-3-session-1',
+      title: '网页历史会话',
+      time: '昨天',
+      summary: '网页访客留下的会话纪要，可继续查看原文和译文。',
+      transcript: [
+        { speaker: '访客', source: '谢谢，等我整理好文件再联系你。', translated: 'Terima kasih, saya akan menghubungi Anda lagi setelah dokumen siap.' },
+        { speaker: '我', source: '没问题，整理好后直接发过来即可。', translated: 'Tidak masalah, kirim saja setelah sudah rapi.' },
+      ],
+    },
+  ],
+} satisfies Record<string, ContactHistorySession[]>;
 
 const REMOTE_PROFILES: Record<string, { name: string; role: string; image: string; location: string; latency: string }> = {
   '1': {
@@ -113,12 +254,14 @@ const CAPTION_MODES: Array<{ id: DesktopCaptionMode; label: string }> = [
 
 const DEFAULT_OVERLAY_SETTINGS: CaptionOverlaySettings = {
   visible: false,
-  dock: 'right',
   opacity: 0.9,
   fontScale: 1,
   showOriginal: true,
   showTranslation: true,
   compact: false,
+  scrollMode: false,
+  visibleLineCount: 5,
+  fullscreen: false,
 };
 
 const DEFAULT_CAPTION_STATE: CaptionStreamState = {
@@ -128,6 +271,24 @@ const DEFAULT_CAPTION_STATE: CaptionStreamState = {
   sourceDevice: 'system-mix',
   sourceLanguage: 'auto',
   targetLanguage: 'zh',
+};
+
+const DESKTOP_PREFERENCES_KEY = 'knowly.desktop.translationPreferences.v1';
+const DESKTOP_TERMS_KEY = 'knowly.desktop.terms.v1';
+const DESKTOP_CUSTOM_SCENES_KEY = 'knowly.desktop.customScenes.v1';
+const REFERENCE_FILE_LIMIT_BYTES = 2 * 1024 * 1024;
+const REFERENCE_FILE_EXTENSIONS = ['txt', 'docx', 'pdf', 'xlsx'] as const;
+const DEFAULT_CUSTOM_SCENE_PROMPT = '请根据当前业务场景调整翻译：优先保留关键专有名词、金额、时间、单据名称和责任方；语气保持清楚、礼貌、可直接用于商务沟通。';
+
+const DEFAULT_TRANSLATION_PREFERENCES: DesktopTranslationPreferences = {
+  sourceLanguage: 'auto',
+  targetLanguage: 'id',
+  translationFormality: 'business',
+  subtitleSize: 'standard',
+  showOriginalText: true,
+  autoGenerateSummary: true,
+  useTermsLibrary: true,
+  activeSceneId: 'meeting',
 };
 
 const AUDIO_DEVICES = [
@@ -149,12 +310,80 @@ const TARGET_LANGUAGES: Array<{ value: DesktopTargetLanguage; label: string }> =
   { value: 'en', label: '英语' },
 ];
 
+const FORMALITY_OPTIONS: Array<{ value: DesktopTranslationFormality; label: string; description: string }> = [
+  { value: 'plain', label: '自然直译', description: '保留口语感' },
+  { value: 'business', label: '商务正式', description: '默认推荐' },
+  { value: 'formal', label: '科学严谨', description: '适合合同和文件' },
+];
+
+const SUBTITLE_SIZE_OPTIONS: Array<{ value: DesktopSubtitleSize; label: string }> = [
+  { value: 'compact', label: '紧凑' },
+  { value: 'standard', label: '标准' },
+  { value: 'large', label: '大字' },
+];
+
 const CURRENT_DESKTOP_PLAN_LABEL = '企业版';
+
+function desktopPreferenceSummary(preferences: DesktopTranslationPreferences) {
+  const source = SOURCE_LANGUAGES.find((item) => item.value === preferences.sourceLanguage)?.label ?? preferences.sourceLanguage;
+  const target = TARGET_LANGUAGES.find((item) => item.value === preferences.targetLanguage)?.label ?? preferences.targetLanguage;
+  const formality = FORMALITY_OPTIONS.find((item) => item.value === preferences.translationFormality)?.label ?? preferences.translationFormality;
+  return `${source} → ${target} · ${formality}${preferences.useTermsLibrary ? ' · 使用术语库' : ''}`;
+}
+
+function desktopCaptionSessionSummary(
+  preferences: DesktopTranslationPreferences,
+  sourceLanguage: DesktopSourceLanguage,
+  targetLanguage: DesktopTargetLanguage,
+) {
+  const source = SOURCE_LANGUAGES.find((item) => item.value === sourceLanguage)?.label ?? sourceLanguage;
+  const target = TARGET_LANGUAGES.find((item) => item.value === targetLanguage)?.label ?? targetLanguage;
+  const formality = FORMALITY_OPTIONS.find((item) => item.value === preferences.translationFormality)?.label ?? preferences.translationFormality;
+  return `${source} → ${target} · ${formality}${preferences.useTermsLibrary ? ' · 使用术语库' : ''}`;
+}
+
+function desktopCaptionTemporarySummary(sourceLanguage: DesktopSourceLanguage, targetLanguage: DesktopTargetLanguage) {
+  const source = SOURCE_LANGUAGES.find((item) => item.value === sourceLanguage)?.label ?? sourceLanguage;
+  const target = TARGET_LANGUAGES.find((item) => item.value === targetLanguage)?.label ?? targetLanguage;
+  return `临时设置 · ${source} → ${target}`;
+}
+
+function subtitleSizeToOverlayDefaults(size: DesktopSubtitleSize): Pick<CaptionOverlaySettings, 'compact' | 'fontScale'> {
+  if (size === 'compact') return { compact: true, fontScale: 0.9 };
+  if (size === 'large') return { compact: false, fontScale: 1.18 };
+  return { compact: false, fontScale: 1 };
+}
+
+function readDesktopPreferences() {
+  const stored = readStoredValue<Partial<DesktopTranslationPreferences> | null>(DESKTOP_PREFERENCES_KEY, null);
+  if (!stored) return DEFAULT_TRANSLATION_PREFERENCES;
+
+  const validSource = SOURCE_LANGUAGES.some((item) => item.value === stored.sourceLanguage);
+  const validTarget = TARGET_LANGUAGES.some((item) => item.value === stored.targetLanguage);
+  const validFormality = FORMALITY_OPTIONS.some((item) => item.value === stored.translationFormality);
+  const validSubtitleSize = SUBTITLE_SIZE_OPTIONS.some((item) => item.value === stored.subtitleSize);
+  const validScene = SCENES.some((item) => item.id === stored.activeSceneId) || stored.activeSceneId?.startsWith('desktop-custom-scene-');
+
+  return {
+    ...DEFAULT_TRANSLATION_PREFERENCES,
+    ...stored,
+    sourceLanguage: validSource ? stored.sourceLanguage! : DEFAULT_TRANSLATION_PREFERENCES.sourceLanguage,
+    targetLanguage: validTarget ? stored.targetLanguage! : DEFAULT_TRANSLATION_PREFERENCES.targetLanguage,
+    translationFormality: validFormality ? stored.translationFormality! : DEFAULT_TRANSLATION_PREFERENCES.translationFormality,
+    subtitleSize: validSubtitleSize ? stored.subtitleSize! : DEFAULT_TRANSLATION_PREFERENCES.subtitleSize,
+    activeSceneId: validScene ? stored.activeSceneId! : DEFAULT_TRANSLATION_PREFERENCES.activeSceneId,
+  };
+}
 
 function formatDuration(seconds: number) {
   const mins = Math.floor(seconds / 60);
   const secs = seconds % 60;
   return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+}
+
+function formatFileSize(bytes: number) {
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
 function getContactMeta(contact: (typeof CONTACTS)[number]) {
@@ -230,6 +459,7 @@ function Sidebar({ activeView, onChange }: { activeView: DesktopView; onChange: 
   const navItems = [
     { id: 'call' as const, label: 'AI 通话', icon: Phone },
     { id: 'captions' as const, label: '字幕同传', icon: Captions },
+    { id: 'preferences' as const, label: '翻译偏好', icon: Settings2 },
   ];
 
   return (
@@ -237,8 +467,8 @@ function Sidebar({ activeView, onChange }: { activeView: DesktopView; onChange: 
       <div className="flex h-16 items-center gap-3 border-b border-slate-100 px-5">
         <img src={knowlyLogoUrl} alt="Knowly" className="h-10 w-10 shrink-0 rounded-lg object-contain" />
         <div className="min-w-0">
-          <p className="truncate text-sm font-black text-slate-950">Knowly PC</p>
-          <p className="truncate text-xs text-slate-500">AI bilingual workspace</p>
+          <p className="truncate text-sm font-black text-slate-950">懂译Knowly</p>
+          <p className="truncate text-xs text-slate-500">AI Multilingual Workplace</p>
         </div>
       </div>
 
@@ -319,40 +549,79 @@ function DesktopShell({
   onChangeView: (view: DesktopView) => void;
   children: ReactNode;
 }) {
+  const title = activeView === 'call' ? 'AI 通话' : activeView === 'captions' ? 'PC 字幕同声传译' : '翻译偏好';
+  const [appDownloadOpen, setAppDownloadOpen] = useState(false);
+  const [appDownloadExpanded, setAppDownloadExpanded] = useState(false);
+
+  function closeAppDownload() {
+    setAppDownloadOpen(false);
+    setAppDownloadExpanded(false);
+  }
+
   return (
     <div className="flex h-full min-h-0 bg-[#eef2f7]">
       <Sidebar activeView={activeView} onChange={onChangeView} />
       <main className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-16 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-6">
           <div className="min-w-0">
-            <h1 className="truncate text-lg font-black text-slate-950">{activeView === 'call' ? 'AI 通话' : 'PC 字幕同声传译'}</h1>
+            <h1 className="truncate text-lg font-black text-slate-950">{title}</h1>
           </div>
           <div className="relative">
-            <input id="knowly-app-download-toggle" type="checkbox" className="peer sr-only" />
-            <label
-              htmlFor="knowly-app-download-toggle"
-              className="flex h-9 cursor-pointer select-none items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700 active:scale-[0.98]"
+            <button
+              type="button"
+              onClick={() => setAppDownloadOpen((open) => !open)}
+              className="flex h-9 select-none items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-xs font-bold text-slate-700 transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700 active:scale-[0.98]"
             >
               <Download className="h-4 w-4" />
               APP 下载
-            </label>
-            <div className="absolute right-0 top-11 z-50 hidden w-72 rounded-lg border border-slate-200 bg-white p-4 text-center shadow-2xl shadow-slate-900/16 peer-checked:block">
-              <div className="mx-auto flex h-40 w-40 items-center justify-center rounded-lg border border-slate-200 bg-white p-2">
-                <img src={appDownloadQrUrl} alt="Knowly APP 下载二维码" className="h-full w-full object-contain" />
+            </button>
+            {appDownloadOpen && !appDownloadExpanded && (
+              <div className="absolute right-0 top-11 z-50 w-72 rounded-lg border border-slate-200 bg-white p-4 text-center shadow-2xl shadow-slate-900/16">
+                <div className="mb-2 flex items-center justify-end">
+                  <button type="button" onClick={() => setAppDownloadExpanded(true)} aria-label="最大化 APP 下载" title="最大化" className="flex h-7 w-7 items-center justify-center rounded-md text-blue-700 transition hover:bg-blue-50">
+                    <Maximize2 className="h-4 w-4" />
+                  </button>
+                </div>
+                <div className="mx-auto flex h-40 w-40 items-center justify-center rounded-lg border border-slate-200 bg-white p-2">
+                  <img src={appDownloadQrUrl} alt="Knowly APP 下载二维码" className="h-full w-full object-contain" />
+                </div>
+                <p className="mt-3 text-sm font-black text-slate-950">APP 下载</p>
+                <p className="mt-2 text-xs leading-relaxed text-slate-500">下载Knowly手机APP，输入大会码可在手机同步观看字幕翻译</p>
+                <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 font-mono text-sm font-black tracking-wider text-slate-950">{CAPTION_CONFERENCE_CODE}</p>
               </div>
-              <p className="mt-3 text-sm font-black text-slate-950">APP 下载</p>
-              <p className="mt-2 text-xs leading-relaxed text-slate-500">下载Knowly手机APP，输入大会码可在手机同步观看字幕翻译</p>
-              <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 font-mono text-sm font-black tracking-wider text-slate-950">KLY-8421</p>
-            </div>
+            )}
           </div>
         </header>
-        <div className="min-h-0 flex-1 overflow-hidden p-5">{children}</div>
+        <div className="relative min-h-0 flex-1 overflow-hidden p-5">
+          {children}
+          {appDownloadOpen && appDownloadExpanded && (
+            <div className="absolute inset-0 z-[80] flex items-center justify-center bg-white p-10">
+              <button type="button" onClick={closeAppDownload} aria-label="关闭 APP 下载投屏" className="absolute right-6 top-6 flex h-11 w-11 items-center justify-center rounded-lg bg-slate-100 text-slate-500 transition hover:bg-slate-200">
+                <X className="h-5 w-5" />
+              </button>
+              <div className="text-center">
+                <div className="mx-auto flex h-[min(46vh,420px)] w-[min(46vh,420px)] items-center justify-center rounded-2xl border border-slate-200 bg-white p-5 shadow-xl shadow-slate-200/70">
+                  <img src={appDownloadQrUrl} alt="Knowly APP 下载二维码" className="h-full w-full object-contain" />
+                </div>
+                <h2 className="mt-8 text-4xl font-black text-slate-950">APP 下载</h2>
+                <p className="mx-auto mt-4 max-w-2xl text-xl font-semibold leading-relaxed text-slate-600">下载Knowly手机APP，输入大会码可在手机同步观看字幕翻译</p>
+                <p className="mx-auto mt-8 inline-flex rounded-2xl bg-blue-50 px-12 py-5 font-mono text-6xl font-black tracking-wider text-blue-700">{CAPTION_CONFERENCE_CODE}</p>
+              </div>
+            </div>
+          )}
+        </div>
       </main>
     </div>
   );
 }
 
-function AiCallWorkspace() {
+function AiCallWorkspace({
+  preferences,
+  onOpenPreferences,
+}: {
+  preferences: DesktopTranslationPreferences;
+  onOpenPreferences: () => void;
+}) {
   const script = useMemo(() => SCENE_SCRIPTS.meeting, []);
   const [stage, setStage] = useState<DesktopCallStage>('home');
   const [draft, setDraft] = useState<DesktopCallDraft | null>(null);
@@ -360,13 +629,21 @@ function AiCallWorkspace() {
   const [endedSummary, setEndedSummary] = useState<SessionSummary | null>(null);
   const [joinCode, setJoinCode] = useState('');
   const [copied, setCopied] = useState<'id' | 'link' | null>(null);
-  const [applyGuestPreferences, setApplyGuestPreferences] = useState(true);
   const [isAddContactOpen, setIsAddContactOpen] = useState(false);
   const [contactIdInput, setContactIdInput] = useState('');
   const [addedContacts, setAddedContacts] = useState<typeof CONTACTS>([]);
   const [contactNameOverrides, setContactNameOverrides] = useState<Record<string, string>>({});
+  const [applyGuestPreferences, setApplyGuestPreferences] = useState(true);
+  const [isAllContactsOpen, setIsAllContactsOpen] = useState(false);
   const [editingContactId, setEditingContactId] = useState('');
   const [editingContactName, setEditingContactName] = useState('');
+  const [pendingCallContactId, setPendingCallContactId] = useState('');
+  const [historyContactId, setHistoryContactId] = useState('');
+  const [expandedHistoryId, setExpandedHistoryId] = useState('');
+  const [editingHistoryKey, setEditingHistoryKey] = useState('');
+  const [historyTranslationDraft, setHistoryTranslationDraft] = useState('');
+  const [historyCorrections, setHistoryCorrections] = useState<Record<string, string>>({});
+  const [rememberedHistoryKey, setRememberedHistoryKey] = useState('');
   const [selectedContactId, setSelectedContactId] = useState('');
   const [lobbyJoined, setLobbyJoined] = useState(false);
   const [appQrOpen, setAppQrOpen] = useState(false);
@@ -379,12 +656,17 @@ function AiCallWorkspace() {
   const [showCaptions, setShowCaptions] = useState(true);
   const [showExitConfirm, setShowExitConfirm] = useState(false);
 
+  const displayedContacts = useMemo(() => {
+    return [...addedContacts, ...CONTACTS.filter((contact) => !addedContacts.some((item) => item.id === contact.id))]
+      .map((contact) => ({ ...contact, name: contactNameOverrides[contact.id] ?? contact.name }));
+  }, [addedContacts, contactNameOverrides]);
+
   useEffect(() => {
     if (stage !== 'lobby' || !draft) return undefined;
     setLobbyJoined(false);
     const joinTimer = window.setTimeout(() => setLobbyJoined(true), 1600);
     const startTimer = window.setTimeout(() => {
-      const contact = CONTACTS.find((item) => item.id === draft.contactId);
+      const contact = displayedContacts.find((item) => item.id === draft.contactId);
       const remoteName = contact?.name ?? (draft.mode === 'join' ? '网页访客' : 'Budi');
       const callMode = draft.mode === 'voice' ? 'voice' : 'video';
       setActiveCall({
@@ -409,7 +691,7 @@ function AiCallWorkspace() {
       window.clearTimeout(joinTimer);
       window.clearTimeout(startTimer);
     };
-  }, [draft, script, stage]);
+  }, [displayedContacts, draft, script, stage]);
 
   useEffect(() => {
     if (stage !== 'room') return undefined;
@@ -426,12 +708,10 @@ function AiCallWorkspace() {
     return () => window.clearTimeout(timer);
   }, [activeCall, revealedCount, stage]);
 
-  const displayedContacts = useMemo(() => {
-    return [...addedContacts, ...CONTACTS.filter((contact) => !addedContacts.some((item) => item.id === contact.id))]
-      .map((contact) => ({ ...contact, name: contactNameOverrides[contact.id] ?? contact.name }));
-  }, [addedContacts, contactNameOverrides]);
-
   const selectedContact = displayedContacts.find((contact) => contact.id === selectedContactId) ?? displayedContacts[0];
+  const pendingCallContact = displayedContacts.find((contact) => contact.id === pendingCallContactId) ?? null;
+  const historyContact = displayedContacts.find((contact) => contact.id === historyContactId) ?? null;
+  const historySessions = historyContact ? (CONTACT_HISTORY[historyContact.id] ?? []) : [];
   const visibleTurns = activeCall?.turns.slice(0, Math.max(1, revealedCount)) ?? [];
   const currentTurn = visibleTurns[visibleTurns.length - 1] ?? script[0];
   const summary = useMemo(() => makeSummary(visibleTurns.length ? visibleTurns : script.slice(0, 2)), [script, visibleTurns]);
@@ -439,6 +719,8 @@ function AiCallWorkspace() {
   const remoteName = activeCall?.participants.find((participant) => participant !== '我') ?? remoteProfile.name;
   const selectedCaptionMode = CAPTION_MODES.find((mode) => mode.id === captionMode) ?? CAPTION_MODES[0];
   const progress = activeCall ? Math.min(100, (visibleTurns.length / activeCall.turns.length) * 100) : 0;
+  const preferenceSummaryText = desktopPreferenceSummary(preferences);
+  const displayedPreferenceSummary = applyGuestPreferences ? preferenceSummaryText : '未使用翻译偏好';
 
   function copyToClipboard(value: string, type: 'id' | 'link') {
     void navigator.clipboard?.writeText(value);
@@ -483,6 +765,64 @@ function AiCallWorkspace() {
     setEditingContactName('');
   }
 
+  function hasHistory(contact: (typeof displayedContacts)[number]) {
+    return Boolean(CONTACT_HISTORY[contact.id]?.length);
+  }
+
+  function openEditContact(contact: (typeof displayedContacts)[number]) {
+    setEditingContactId(contact.id);
+    setEditingContactName(contact.name);
+  }
+
+  function startContactCall(contact: (typeof displayedContacts)[number], mode: 'voice' | 'video') {
+    openLobby(mode, contact.id);
+    setPendingCallContactId('');
+  }
+
+  function openContactHistory(contact: (typeof displayedContacts)[number]) {
+    const sessions = CONTACT_HISTORY[contact.id] ?? [];
+    setHistoryContactId(contact.id);
+    setExpandedHistoryId(sessions[0]?.id ?? '');
+    setEditingHistoryKey('');
+    setHistoryTranslationDraft('');
+    setRememberedHistoryKey('');
+  }
+
+  function closeContactHistory() {
+    setHistoryContactId('');
+    setExpandedHistoryId('');
+    setEditingHistoryKey('');
+    setHistoryTranslationDraft('');
+    setRememberedHistoryKey('');
+  }
+
+  function historyTurnKey(sessionId: string, turnIndex: number) {
+    return `${sessionId}-${turnIndex}`;
+  }
+
+  function startHistoryCorrection(sessionId: string, turnIndex: number, translated: string) {
+    const key = historyTurnKey(sessionId, turnIndex);
+    setEditingHistoryKey(key);
+    setHistoryTranslationDraft(historyCorrections[key] ?? translated);
+  }
+
+  function cancelHistoryCorrection() {
+    setEditingHistoryKey('');
+    setHistoryTranslationDraft('');
+  }
+
+  function saveHistoryCorrection(sessionId: string, turnIndex: number) {
+    const key = historyTurnKey(sessionId, turnIndex);
+    const correctedText = historyTranslationDraft.trim();
+    if (!correctedText) return;
+
+    setHistoryCorrections((current) => ({ ...current, [key]: correctedText }));
+    setEditingHistoryKey('');
+    setHistoryTranslationDraft('');
+    setRememberedHistoryKey(key);
+    window.setTimeout(() => setRememberedHistoryKey((current) => current === key ? '' : current), 1600);
+  }
+
   function finishCall() {
     setEndedSummary(summary);
     setShowExitConfirm(false);
@@ -524,6 +864,28 @@ function AiCallWorkspace() {
     );
   }
 
+  function renderTranslationPreferenceControl(className = '') {
+    return (
+      <div className={cn('flex h-10 max-w-none items-center overflow-hidden rounded-lg border border-slate-200 bg-white/75 text-xs font-bold text-slate-700 transition hover:border-blue-200 hover:bg-white', className)}>
+        <button
+          type="button"
+          onClick={() => setApplyGuestPreferences((current) => !current)}
+          aria-pressed={applyGuestPreferences}
+          className="flex h-full shrink-0 items-center gap-2 border-r border-slate-200 px-3 transition hover:bg-slate-50"
+        >
+          <span className={cn('h-5 w-9 rounded-full p-0.5 transition', applyGuestPreferences ? 'bg-blue-500' : 'bg-slate-200')}>
+            <span className={cn('block h-4 w-4 rounded-full bg-white shadow-sm transition', applyGuestPreferences && 'translate-x-4')} />
+          </span>
+          <span className="hidden whitespace-nowrap xl:inline">使用翻译偏好</span>
+        </button>
+        <button type="button" onClick={onOpenPreferences} className="flex h-full min-w-0 items-center gap-2 px-3 transition hover:bg-slate-50">
+          <Settings2 className="h-4 w-4 shrink-0 text-slate-500" />
+          <span className="whitespace-nowrap">{displayedPreferenceSummary}</span>
+        </button>
+      </div>
+    );
+  }
+
   function renderTopCallBar() {
     return (
       <section className="shrink-0 rounded-lg border border-slate-200 bg-white px-4 py-3 shadow-sm shadow-slate-200/50">
@@ -555,12 +917,7 @@ function AiCallWorkspace() {
             </button>
           </div>
 
-          <button type="button" onClick={() => setApplyGuestPreferences((current) => !current)} aria-pressed={applyGuestPreferences} className="ml-auto flex h-10 items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 text-xs font-bold text-slate-700 transition hover:bg-slate-100 active:scale-[0.98]">
-            应用翻译偏好
-            <span className={cn('h-5 w-9 rounded-full p-0.5 transition', applyGuestPreferences ? 'bg-blue-500' : 'bg-slate-300')}>
-              <span className={cn('block h-4 w-4 rounded-full bg-white shadow-sm transition', applyGuestPreferences && 'translate-x-4')} />
-            </span>
-          </button>
+          {renderTranslationPreferenceControl('ml-auto shrink-0 bg-slate-50')}
         </div>
         <div className="mt-2 flex items-center justify-between gap-3 text-xs">
           <p className="text-slate-500">复制通话 ID 发给对方，对方可通过 Knowly App 或网页端加入。</p>
@@ -597,7 +954,7 @@ function AiCallWorkspace() {
         )}
 
         <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className="grid grid-cols-[minmax(150px,1fr)_58px_66px_68px] border-b border-slate-100 bg-slate-50 px-4 py-2 text-[11px] font-black text-slate-500">
+          <div className="grid grid-cols-[minmax(150px,1fr)_58px_66px_104px] border-b border-slate-100 bg-slate-50 px-4 py-2 text-[11px] font-black text-slate-500">
             <span>联系人</span>
             <span>来源</span>
             <span>最近</span>
@@ -614,7 +971,7 @@ function AiCallWorkspace() {
                 onClick={() => setSelectedContactId(contact.id)}
                 onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setSelectedContactId(contact.id); } }}
                 className={cn(
-                  'grid w-full cursor-pointer grid-cols-[minmax(150px,1fr)_58px_66px_68px] items-center gap-2 border-b border-slate-100 px-4 py-3 text-left transition hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-blue-100',
+                  'grid w-full cursor-pointer grid-cols-[minmax(150px,1fr)_58px_66px_104px] items-center gap-2 border-b border-slate-100 px-4 py-3 text-left transition hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-blue-100',
                   active && 'bg-blue-50/70',
                 )}
               >
@@ -630,11 +987,21 @@ function AiCallWorkspace() {
                 </span>
                 <span className="truncate text-xs font-semibold text-slate-500">{contact.lastCall}</span>
                 <span className="flex justify-end gap-1">
+                  {hasHistory(contact) && (
+                    <button
+                      type="button"
+                      onClick={(event) => { event.stopPropagation(); openContactHistory(contact); }}
+                      className="flex h-8 w-8 items-center justify-center rounded-lg bg-white text-slate-500 shadow-sm transition hover:bg-blue-50 hover:text-blue-600"
+                      aria-label={`${contact.name} 的通话历史`}
+                    >
+                      <History className="h-4 w-4" />
+                    </button>
+                  )}
                   {appContact && (
                     <>
                       <button
                         type="button"
-                        onClick={(event) => { event.stopPropagation(); setEditingContactId(contact.id); setEditingContactName(contact.name); }}
+                        onClick={(event) => { event.stopPropagation(); openEditContact(contact); }}
                         className="flex h-8 w-8 items-center justify-center rounded-lg bg-white text-slate-500 shadow-sm transition hover:bg-blue-50 hover:text-blue-600"
                         aria-label={`编辑 ${contact.name}`}
                       >
@@ -642,7 +1009,7 @@ function AiCallWorkspace() {
                       </button>
                       <button
                         type="button"
-                        onClick={(event) => { event.stopPropagation(); openLobby('voice', contact.id); }}
+                        onClick={(event) => { event.stopPropagation(); setPendingCallContactId(contact.id); }}
                         className="flex h-8 w-8 items-center justify-center rounded-lg bg-white text-slate-500 shadow-sm transition hover:bg-blue-50 hover:text-blue-600"
                         aria-label={`呼叫 ${contact.name}`}
                       >
@@ -695,9 +1062,15 @@ function AiCallWorkspace() {
 
             <div className="mt-6 flex flex-wrap gap-3">
               {selectedContact?.source !== 'web' && (
-                <button type="button" onClick={() => openLobby('voice', selectedContact?.id)} className="flex h-11 items-center gap-2 rounded-lg bg-slate-950 px-4 text-sm font-bold text-white transition hover:bg-slate-800 active:scale-[0.98]">
+                <button type="button" onClick={() => setPendingCallContactId(selectedContact.id)} className="flex h-11 items-center gap-2 rounded-lg bg-slate-950 px-4 text-sm font-bold text-white transition hover:bg-slate-800 active:scale-[0.98]">
                   <Phone className="h-4 w-4" />
                   呼叫联系人
+                </button>
+              )}
+              {selectedContact && hasHistory(selectedContact) && (
+                <button type="button" onClick={() => openContactHistory(selectedContact)} className="flex h-11 items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 text-sm font-bold text-slate-800 transition hover:bg-slate-50">
+                  <History className="h-4 w-4" />
+                  通话历史
                 </button>
               )}
               <button type="button" onClick={() => copyToClipboard(INVITE_CODE, 'id')} className="flex h-11 items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 text-sm font-bold text-slate-800 transition hover:bg-slate-50">
@@ -715,8 +1088,8 @@ function AiCallWorkspace() {
               </div>
               <div className="space-y-3 text-xs font-semibold text-slate-600">
                 <p className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-emerald-600" /> 双语字幕将在通话中自动生成</p>
-                <p className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-emerald-600" /> 结束后生成纪要与待办</p>
-                <p className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-emerald-600" /> 当前仅模拟双人通话</p>
+                <p className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-emerald-600" /> {preferences.autoGenerateSummary ? '结束后生成纪要与待办' : '结束后可手动整理纪要'}</p>
+                <p className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-emerald-600" /> 当前仅支持双人通话</p>
               </div>
             </div>
             {endedSummary && (
@@ -749,6 +1122,220 @@ function AiCallWorkspace() {
     );
   }
 
+  function renderPendingCallDialog() {
+    if (!pendingCallContact) return null;
+    return (
+      <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/35 p-6">
+        <div className="w-full max-w-md rounded-lg bg-white p-5 shadow-2xl">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h3 className="text-base font-black text-slate-950">发起通话</h3>
+              <p className="mt-1 text-sm leading-relaxed text-slate-500">要与 {pendingCallContact.name} 通话吗？请选择语音通话或视频通话。</p>
+            </div>
+            <button type="button" onClick={() => setPendingCallContactId('')} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-slate-500 transition hover:bg-slate-100" aria-label="关闭">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+
+          <div className="mt-5 grid grid-cols-2 gap-3">
+            <button type="button" onClick={() => startContactCall(pendingCallContact, 'voice')} className="flex h-12 items-center justify-center gap-2 rounded-lg bg-slate-950 px-3 text-sm font-bold text-white transition hover:bg-slate-800">
+              <Phone className="h-4 w-4" />
+              语音通话
+            </button>
+            <button type="button" onClick={() => startContactCall(pendingCallContact, 'video')} className="flex h-12 items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-900 transition hover:bg-slate-50">
+              <Video className="h-4 w-4" />
+              视频通话
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderHistoryDialog() {
+    if (!historyContact) return null;
+    return (
+      <div className="fixed inset-0 z-[75] flex items-center justify-center bg-slate-950/40 p-6">
+        <div className="flex max-h-[min(88vh,760px)] w-full max-w-3xl flex-col overflow-hidden rounded-lg bg-white shadow-2xl">
+          <div className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-100 p-5">
+            <div className="min-w-0">
+              <h3 className="truncate text-lg font-black text-slate-950">{historyContact.name} 的通话历史</h3>
+              <p className="mt-1 text-sm leading-relaxed text-slate-500">纪要、原文与译文记录</p>
+            </div>
+            <button type="button" onClick={closeContactHistory} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-500 transition hover:bg-slate-200" aria-label="关闭">
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-y-auto bg-slate-50 p-5">
+            {historySessions.length > 0 ? (
+              <div className="space-y-3">
+                {historySessions.map((session) => {
+                  const isOpen = expandedHistoryId === session.id;
+                  return (
+                    <article key={session.id} className="overflow-hidden rounded-lg border border-slate-200 bg-white">
+                      <button
+                        type="button"
+                        onClick={() => setExpandedHistoryId((current) => current === session.id ? '' : session.id)}
+                        aria-expanded={isOpen}
+                        className="w-full px-4 py-3 text-left transition hover:bg-slate-50"
+                      >
+                        <span className="flex items-start justify-between gap-3">
+                          <span className="min-w-0">
+                            <span className="block text-sm font-black text-slate-950">{session.title}</span>
+                            <span className="mt-1 block text-xs font-semibold text-slate-500">{session.time} · {session.transcript.length} 条原文记录</span>
+                          </span>
+                          <ChevronDown className={cn('mt-1 h-4 w-4 shrink-0 text-slate-400 transition-transform', isOpen && 'rotate-180')} />
+                        </span>
+                        <span className="mt-3 block text-sm leading-6 text-slate-600">{session.summary}</span>
+                      </button>
+
+                      {isOpen && (
+                        <div className="space-y-3 border-t border-slate-100 bg-slate-50 p-3">
+                          <section className="rounded-lg bg-white p-3">
+                            <h4 className="text-xs font-bold text-slate-500">纪要</h4>
+                            <p className="mt-2 text-sm leading-6 text-slate-800">{session.summary}</p>
+                          </section>
+
+                          {session.transcript.map((turn, index) => {
+                            const key = historyTurnKey(session.id, index);
+                            const translatedText = historyCorrections[key] ?? turn.translated;
+                            const isEditing = editingHistoryKey === key;
+
+                            return (
+                              <section key={key} className="rounded-lg bg-white p-3">
+                                <div className="flex items-center justify-between gap-3">
+                                  <p className="min-w-0 truncate text-xs font-bold text-slate-500">{turn.speaker}</p>
+                                  <p className="shrink-0 text-[11px] font-semibold text-slate-400">#{index + 1}</p>
+                                </div>
+                                <p className="mt-2 text-sm leading-6 text-slate-800">原文：{turn.source}</p>
+
+                                {isEditing ? (
+                                  <div className="mt-2 space-y-2 rounded-lg bg-blue-50 p-2">
+                                    <textarea
+                                      value={historyTranslationDraft}
+                                      onChange={(event) => setHistoryTranslationDraft(event.target.value)}
+                                      className="min-h-24 w-full resize-none rounded-lg border border-blue-100 bg-white p-3 text-sm leading-6 text-blue-900 outline-none focus:ring-2 focus:ring-blue-200"
+                                      autoFocus
+                                    />
+                                    <div className="flex justify-end gap-2">
+                                      <button type="button" onClick={cancelHistoryCorrection} className="h-9 rounded-lg px-3 text-xs font-bold text-slate-500 transition hover:bg-white">
+                                        取消
+                                      </button>
+                                      <button type="button" onClick={() => saveHistoryCorrection(session.id, index)} className="h-9 rounded-lg bg-blue-600 px-3 text-xs font-bold text-white transition hover:bg-blue-700">
+                                        保存订正
+                                      </button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="mt-2 rounded-lg bg-blue-50 p-3 text-sm leading-6 text-blue-800">
+                                    <p>译文：{translatedText}</p>
+                                    <div className="mt-2 flex items-center justify-between gap-2">
+                                      <p className="text-[11px] font-bold text-emerald-600">{rememberedHistoryKey === key ? '已写入记忆' : ''}</p>
+                                      <button type="button" onClick={() => startHistoryCorrection(session.id, index, translatedText)} className="h-8 rounded-lg px-2 text-xs font-bold text-blue-700 transition hover:bg-blue-100">
+                                        订正
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
+                              </section>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            ) : (
+              <section className="rounded-lg border border-slate-200 bg-white p-5 text-sm leading-6 text-slate-500">
+                暂无通话历史，发起通话后会在这里沉淀纪要、原文和译文记录。
+              </section>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  function renderCompactContactRow(contact: (typeof displayedContacts)[number], showLastCall = true) {
+    return (
+      <div key={contact.id} className="flex items-center justify-between gap-5">
+        <button
+          type="button"
+          onClick={() => {
+            setSelectedContactId(contact.id);
+            if (isAllContactsOpen) setIsAllContactsOpen(false);
+          }}
+          className="flex min-w-0 items-center gap-4 text-left"
+        >
+          {renderContactAvatar(contact)}
+          <span className="min-w-0">
+            <span className="flex min-w-0 items-center gap-1.5">
+              <span className="truncate text-base font-black text-slate-950">{contact.name}</span>
+              {contact.source !== 'web' && (
+                <span
+                  role="button"
+                  tabIndex={0}
+                  onClick={(event) => { event.preventDefault(); event.stopPropagation(); openEditContact(contact); }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      openEditContact(contact);
+                    }
+                  }}
+                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-slate-400 transition hover:bg-blue-50 hover:text-blue-600"
+                  aria-label={`编辑 ${contact.name}`}
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                </span>
+              )}
+            </span>
+            <span className="mt-0.5 block truncate font-mono text-sm font-semibold text-slate-500">{contact.contactCode || '网页通话'}</span>
+          </span>
+        </button>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {showLastCall && <span className="mr-2 text-sm font-semibold text-slate-500">{contact.lastCall}</span>}
+          {hasHistory(contact) && (
+            <button type="button" onClick={() => openContactHistory(contact)} className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-50 text-slate-500 transition hover:bg-blue-50 hover:text-blue-600" aria-label={`${contact.name} 的通话历史`}>
+              <History className="h-4 w-4" />
+            </button>
+          )}
+          {contact.source !== 'web' && (
+            <button type="button" onClick={() => setPendingCallContactId(contact.id)} className="flex h-8 w-8 items-center justify-center rounded-lg bg-slate-50 text-slate-500 transition hover:bg-blue-50 hover:text-blue-600" aria-label={`呼叫 ${contact.name}`}>
+              <Phone className="h-4 w-4" />
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  function renderAllContactsDialog() {
+    if (!isAllContactsOpen) return null;
+    return (
+      <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/35 p-6">
+        <div className="flex max-h-[min(82vh,680px)] w-full max-w-2xl flex-col overflow-hidden rounded-lg bg-white shadow-2xl">
+          <div className="flex shrink-0 items-center justify-between gap-4 border-b border-slate-100 p-5">
+            <div>
+              <h3 className="text-lg font-black text-slate-950">全部联系人</h3>
+              <p className="mt-1 text-sm text-slate-500">选择联系人、查看历史或发起通话。</p>
+            </div>
+            <button type="button" onClick={() => setIsAllContactsOpen(false)} className="flex h-10 w-10 items-center justify-center rounded-lg bg-slate-100 text-slate-500 transition hover:bg-slate-200" aria-label="关闭">
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto p-5">
+            <div className="space-y-5">
+              {displayedContacts.map((contact) => renderCompactContactRow(contact, true))}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   function renderWorkspacePanel(sessionPanel: ReactNode) {
     return (
       <div className="flex h-full min-h-0 flex-col gap-4">
@@ -758,17 +1345,113 @@ function AiCallWorkspace() {
           {sessionPanel}
         </div>
         {renderEditContactDialog()}
+        {renderPendingCallDialog()}
+        {renderHistoryDialog()}
+        {renderAllContactsDialog()}
       </div>
     );
   }
 
   function renderHomePanel() {
-    return renderWorkspacePanel(renderEmptySessionPanel());
+    return (
+      <div className="flex h-full min-h-0 items-start justify-center px-8 pb-14 pt-[18vh]">
+        <div className="w-full max-w-[1160px]">
+          <section className="rounded-lg border border-slate-200 bg-white px-10 py-10 shadow-lg shadow-blue-100/45">
+            <div className="flex h-16 items-center justify-between gap-5 rounded-lg border border-slate-200 bg-blue-50/50 px-5">
+              <div className="flex min-w-0 items-center gap-3">
+                <span className="text-sm font-bold text-slate-600">我的通话 ID</span>
+                <span className="font-mono text-2xl font-black tracking-wider text-slate-950">{INVITE_CODE}</span>
+                <button type="button" onClick={() => copyToClipboard(INVITE_CODE, 'id')} className="flex h-8 w-8 items-center justify-center rounded-md text-slate-500 transition hover:bg-white hover:text-slate-950" aria-label="复制通话 ID">
+                  {copied === 'id' ? <Check className="h-4 w-4 text-emerald-600" /> : <Copy className="h-4 w-4" />}
+                </button>
+              </div>
+
+              {renderTranslationPreferenceControl('shrink-0')}
+            </div>
+
+            <div className="mt-14 flex items-center justify-center gap-8">
+              <button type="button" onClick={() => openLobby('voice')} className="flex h-16 min-w-52 items-center justify-center gap-3 rounded-lg bg-slate-950 px-8 text-lg font-bold text-white transition hover:bg-slate-800 active:scale-[0.98]">
+                <Phone className="h-6 w-6" />
+                语音通话
+              </button>
+              <button type="button" onClick={() => openLobby('video')} className="flex h-16 min-w-52 items-center justify-center gap-3 rounded-lg border border-slate-200 bg-white px-8 text-lg font-bold text-slate-900 transition hover:bg-slate-50 active:scale-[0.98]">
+                <Video className="h-6 w-6" />
+                视频通话
+              </button>
+              <div className="flex h-16 min-w-[370px] overflow-hidden rounded-lg border border-slate-200 bg-blue-50/50">
+                <input value={joinCode} onChange={(event) => setJoinCode(event.target.value.toUpperCase())} placeholder="输入通话 ID" className="h-full min-w-0 flex-1 bg-transparent px-5 font-mono text-base font-bold tracking-wider text-slate-900 outline-none placeholder:text-slate-400" />
+                <button type="button" disabled={!joinCode.trim()} onClick={joinCall} className="flex h-full w-32 items-center justify-center gap-2 bg-blue-600 text-base font-bold text-white transition hover:bg-blue-700 active:scale-[0.98] disabled:bg-blue-300">
+                  加入
+                  <ArrowRight className="h-5 w-5" />
+                </button>
+              </div>
+            </div>
+
+            <div className="my-10 border-t border-slate-200" />
+
+            <div className="grid grid-cols-[minmax(0,1fr)_minmax(360px,0.95fr)] gap-10">
+              <section className="min-w-0">
+                <div className="mb-7 flex items-center justify-between">
+                  <div>
+                    <h2 className="text-base font-black text-slate-950">联系人与最近通话</h2>
+                    <button type="button" onClick={() => setIsAllContactsOpen(true)} className="mt-1 text-xs font-bold text-blue-600 transition hover:text-blue-700">
+                      全部联系人
+                    </button>
+                  </div>
+                  <button type="button" onClick={() => setIsAddContactOpen((open) => !open)} className="flex h-9 items-center gap-1.5 rounded-lg px-2 text-xs font-bold text-blue-600 transition hover:bg-blue-50">
+                    <UserPlus className="h-4 w-4" />
+                    添加
+                  </button>
+                </div>
+
+                {isAddContactOpen && (
+                  <div className="mb-5 rounded-lg border border-blue-100 bg-blue-50 p-3">
+                    <label className="block text-xs font-bold text-blue-700">对方 ID</label>
+                    <div className="mt-2 flex gap-2">
+                      <input value={contactIdInput} onChange={(event) => setContactIdInput(event.target.value.toUpperCase())} placeholder="KLY-5208" className="h-10 min-w-0 flex-1 rounded-lg border border-blue-100 bg-white px-3 font-mono text-sm font-bold outline-none focus:border-blue-300" />
+                      <button type="button" onClick={autoAddContact} disabled={!contactIdInput.trim()} className="h-10 rounded-lg bg-blue-600 px-3 text-xs font-bold text-white disabled:bg-blue-300">添加</button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="space-y-7">
+                  {displayedContacts.slice(0, 2).map((contact) => renderCompactContactRow(contact, true))}
+                </div>
+              </section>
+
+              <aside className="rounded-lg border border-slate-200 bg-blue-50/55 p-8">
+                <div className="mb-8 flex items-center gap-4">
+                  <Languages className="h-8 w-8 text-blue-600" />
+                  <h3 className="text-2xl font-black text-slate-950">AI 辅助已就绪</h3>
+                </div>
+                <div className="space-y-6 text-sm font-semibold text-slate-700">
+                  <p className="flex items-center gap-3"><CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" /> 双语字幕将在通话中自动生成</p>
+                  <p className="flex items-center gap-3"><CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" /> {preferences.autoGenerateSummary ? '结束后生成纪要与待办' : '结束后可手动整理纪要'}</p>
+                  <p className="flex items-center gap-3"><CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" /> 当前仅支持双人通话</p>
+                </div>
+              </aside>
+            </div>
+          </section>
+
+          <div className="mt-7 flex items-center justify-between gap-4 text-sm">
+            <p className="text-slate-500">复制通话 ID 发给对方，对方可通过 Knowly App 或网页端加入。</p>
+            <button type="button" className="shrink-0 font-bold text-blue-600 transition hover:text-blue-700">
+              企业多人通话请联系销售
+            </button>
+          </div>
+
+          {renderEditContactDialog()}
+          {renderPendingCallDialog()}
+          {renderHistoryDialog()}
+          {renderAllContactsDialog()}
+        </div>
+      </div>
+    );
   }
 
   function renderLobbyPanel() {
     const code = draft?.code ?? INVITE_CODE;
-    const contact = CONTACTS.find((item) => item.id === draft?.contactId);
+    const contact = displayedContacts.find((item) => item.id === draft?.contactId);
     const title = contact ? `呼叫 ${contact.name}` : draft?.mode === 'join' ? '加入通话' : draft?.mode === 'voice' ? '发起语音通话' : '发起视频通话';
     const meetingLink = `https://knowly.app/meet/${code}`;
     return (
@@ -1056,6 +1739,7 @@ function LiveCaptionWorkspace({
   lines,
   streamState,
   overlaySettings,
+  preferences,
   onStart,
   onPause,
   onResume,
@@ -1063,10 +1747,12 @@ function LiveCaptionWorkspace({
   onShowOverlay,
   onHideOverlay,
   onUpdateOverlaySettings,
+  onOpenPreferences,
 }: {
   lines: DesktopCaptionLine[];
   streamState: CaptionStreamState;
   overlaySettings: CaptionOverlaySettings;
+  preferences: DesktopTranslationPreferences;
   onStart: (options: StartCaptionStreamOptions) => void;
   onPause: () => void;
   onResume: () => void;
@@ -1074,11 +1760,72 @@ function LiveCaptionWorkspace({
   onShowOverlay: () => void;
   onHideOverlay: () => void;
   onUpdateOverlaySettings: (settings: Partial<CaptionOverlaySettings>) => void;
+  onOpenPreferences: () => void;
 }) {
   const [sourceDevice, setSourceDevice] = useState(streamState.sourceDevice);
-  const [sourceLanguage, setSourceLanguage] = useState<DesktopSourceLanguage>(streamState.sourceLanguage);
-  const [targetLanguage, setTargetLanguage] = useState<DesktopTargetLanguage>(streamState.targetLanguage);
+  const [sourceLanguage, setSourceLanguage] = useState<DesktopSourceLanguage>(preferences.sourceLanguage);
+  const [targetLanguage, setTargetLanguage] = useState<DesktopTargetLanguage>(preferences.targetLanguage);
+  const [useTranslationPreferences, setUseTranslationPreferences] = useState(true);
+  const [referenceFile, setReferenceFile] = useState<ReferenceFileState | null>(null);
+  const [referenceFileError, setReferenceFileError] = useState('');
   const activeLine = lines[lines.length - 1];
+  const sessionPreferenceSummary = useTranslationPreferences
+    ? desktopCaptionSessionSummary(preferences, sourceLanguage, targetLanguage)
+    : desktopCaptionTemporarySummary(sourceLanguage, targetLanguage);
+
+  useEffect(() => {
+    if (streamState.running || !useTranslationPreferences) return;
+    setSourceLanguage(preferences.sourceLanguage);
+    setTargetLanguage(preferences.targetLanguage);
+  }, [preferences.sourceLanguage, preferences.targetLanguage, streamState.running, useTranslationPreferences]);
+
+  function toggleUseTranslationPreferences() {
+    const next = !useTranslationPreferences;
+    setUseTranslationPreferences(next);
+    if (next && !streamState.running) {
+      setSourceLanguage(preferences.sourceLanguage);
+      setTargetLanguage(preferences.targetLanguage);
+    }
+  }
+
+  function updateSourceLanguage(value: DesktopSourceLanguage) {
+    setSourceLanguage(value);
+    setUseTranslationPreferences(false);
+  }
+
+  function updateTargetLanguage(value: DesktopTargetLanguage) {
+    setTargetLanguage(value);
+    setUseTranslationPreferences(false);
+  }
+
+  function handleReferenceFileChange(fileList: FileList | null) {
+    const file = fileList?.[0];
+    if (!file) return;
+
+    const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
+    if (!REFERENCE_FILE_EXTENSIONS.includes(extension as (typeof REFERENCE_FILE_EXTENSIONS)[number])) {
+      setReferenceFileError('仅支持 txt、docx、pdf、xlsx 格式');
+      return;
+    }
+
+    if (file.size > REFERENCE_FILE_LIMIT_BYTES) {
+      setReferenceFileError('文件需小于 2MB');
+      return;
+    }
+
+    setReferenceFile({
+      name: file.name,
+      size: file.size,
+      extension,
+      uploadedAt: new Date().toISOString(),
+    });
+    setReferenceFileError('');
+  }
+
+  function clearReferenceFile() {
+    setReferenceFile(null);
+    setReferenceFileError('');
+  }
 
   return (
     <div className="grid h-full min-h-0 grid-cols-[minmax(0,1fr)_380px] gap-5">
@@ -1087,9 +1834,26 @@ function LiveCaptionWorkspace({
           <div className="flex items-center gap-3">
             <StatusPill running={streamState.running} paused={streamState.paused} />
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <div className="flex h-10 min-w-0 max-w-[520px] items-center overflow-hidden rounded-lg border border-slate-200 bg-white text-xs font-bold text-slate-700 transition hover:border-blue-200">
+              <button
+                type="button"
+                onClick={toggleUseTranslationPreferences}
+                aria-pressed={useTranslationPreferences}
+                className="flex h-full shrink-0 items-center gap-2 border-r border-slate-200 px-3 transition hover:bg-slate-50"
+              >
+                <span className={cn('h-5 w-9 rounded-full p-0.5 transition', useTranslationPreferences ? 'bg-blue-500' : 'bg-slate-200')}>
+                  <span className={cn('block h-4 w-4 rounded-full bg-white shadow-sm transition', useTranslationPreferences && 'translate-x-4')} />
+                </span>
+                <span className="whitespace-nowrap">使用翻译偏好</span>
+              </button>
+              <button type="button" onClick={onOpenPreferences} className="flex h-full min-w-0 items-center gap-2 px-3 transition hover:bg-slate-50">
+                <Settings2 className="h-4 w-4 shrink-0" />
+                <span className="truncate">{sessionPreferenceSummary}</span>
+              </button>
+            </div>
             {!streamState.running && (
-              <button type="button" onClick={() => onStart({ sourceDevice, sourceLanguage, targetLanguage })} className="flex h-10 items-center gap-2 rounded-lg bg-emerald-600 px-4 text-sm font-bold text-white transition hover:bg-emerald-700 active:scale-[0.98]">
+              <button type="button" onClick={() => onStart({ sourceDevice, sourceLanguage, targetLanguage })} className="flex h-10 items-center gap-2 rounded-lg bg-blue-600 px-4 text-sm font-bold text-white transition hover:bg-blue-700 active:scale-[0.98]">
                 <Play className="h-4 w-4" />
                 开始
               </button>
@@ -1115,7 +1879,7 @@ function LiveCaptionWorkspace({
         <div className="grid min-h-0 flex-1 grid-rows-[180px_minmax(0,1fr)] gap-4 p-4">
           <div className="grid grid-cols-[minmax(0,1fr)_260px] gap-4">
             <div className="relative overflow-hidden rounded-lg border border-slate-200 bg-slate-950 p-5 text-white">
-              <div className="absolute inset-0 bg-[radial-gradient(circle_at_15%_20%,rgba(34,197,94,0.34),transparent_30%),radial-gradient(circle_at_75%_65%,rgba(59,130,246,0.3),transparent_33%)]" />
+              <div className="absolute inset-0 bg-[radial-gradient(circle_at_15%_20%,rgba(37,99,235,0.32),transparent_30%),radial-gradient(circle_at_75%_65%,rgba(59,130,246,0.3),transparent_33%)]" />
               <div className="relative flex h-full flex-col justify-between">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2 text-sm font-bold text-white/80">
@@ -1128,15 +1892,25 @@ function LiveCaptionWorkspace({
                   </button>
                 </div>
                 <div className="min-w-0">
-                  <p className="truncate text-2xl font-black">{activeLine?.translatedText ?? '等待输入音频'}</p>
-                  <p className="mt-2 truncate text-sm text-white/65">{activeLine?.originalText ?? '开始后会同步推送到屏幕侧边浮层'}</p>
+                  {streamState.running ? (
+                    <>
+                      <p className="text-xs font-bold uppercase tracking-[0.18em] text-white/50">大会码</p>
+                      <p className="mt-1 font-mono text-4xl font-black tracking-wider text-white">{CAPTION_CONFERENCE_CODE}</p>
+                      <p className="mt-2 text-sm text-white/65">手机端输入大会码，可同步观看字幕翻译</p>
+                    </>
+                  ) : (
+                    <>
+                      <p className="truncate text-2xl font-black">等待输入音频</p>
+                      <p className="mt-2 truncate text-sm text-white/65">开始后会同步推送到屏幕浮层</p>
+                    </>
+                  )}
                 </div>
               </div>
             </div>
 
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
               <div className="mb-3 flex items-center gap-2">
-                <Radio className="h-5 w-5 text-emerald-600" />
+                <Radio className="h-5 w-5 text-blue-600" />
                 <h2 className="text-sm font-black text-slate-950">音频输入</h2>
               </div>
               <select value={sourceDevice} onChange={(event) => setSourceDevice(event.target.value)} disabled={streamState.running} className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none focus:border-blue-300 focus:ring-2 focus:ring-blue-100 disabled:opacity-60">
@@ -1165,13 +1939,13 @@ function LiveCaptionWorkspace({
           <div className="space-y-4">
             <label className="block">
               <span className="mb-2 block text-xs font-bold text-slate-500">源语言</span>
-              <select value={sourceLanguage} onChange={(event) => setSourceLanguage(event.target.value as DesktopSourceLanguage)} disabled={streamState.running} className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none focus:border-blue-300 focus:ring-2 focus:ring-blue-100 disabled:opacity-60">
+              <select value={sourceLanguage} onChange={(event) => updateSourceLanguage(event.target.value as DesktopSourceLanguage)} disabled={streamState.running} className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none focus:border-blue-300 focus:ring-2 focus:ring-blue-100 disabled:opacity-60">
                 {SOURCE_LANGUAGES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
               </select>
             </label>
             <label className="block">
               <span className="mb-2 block text-xs font-bold text-slate-500">目标语言</span>
-              <select value={targetLanguage} onChange={(event) => setTargetLanguage(event.target.value as DesktopTargetLanguage)} disabled={streamState.running} className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none focus:border-blue-300 focus:ring-2 focus:ring-blue-100 disabled:opacity-60">
+              <select value={targetLanguage} onChange={(event) => updateTargetLanguage(event.target.value as DesktopTargetLanguage)} disabled={streamState.running} className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none focus:border-blue-300 focus:ring-2 focus:ring-blue-100 disabled:opacity-60">
                 {TARGET_LANGUAGES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
               </select>
             </label>
@@ -1181,18 +1955,10 @@ function LiveCaptionWorkspace({
         <section className="rounded-lg border border-slate-200 bg-white p-4">
           <div className="mb-4 flex items-center gap-2">
             <PanelRight className="h-5 w-5 text-blue-600" />
-            <h2 className="text-sm font-black text-slate-950">侧边浮层</h2>
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <button type="button" onClick={() => onUpdateOverlaySettings({ dock: 'left', visible: true })} className={cn('flex h-10 items-center justify-center rounded-lg border text-sm font-bold transition active:scale-[0.98]', overlaySettings.dock === 'left' ? 'border-slate-900 bg-slate-950 text-white' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50')}>
-              左侧
-            </button>
-            <button type="button" onClick={() => onUpdateOverlaySettings({ dock: 'right', visible: true })} className={cn('flex h-10 items-center justify-center rounded-lg border text-sm font-bold transition active:scale-[0.98]', overlaySettings.dock === 'right' ? 'border-slate-900 bg-slate-950 text-white' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50')}>
-              右侧
-            </button>
+            <h2 className="text-sm font-black text-slate-950">字幕浮层</h2>
           </div>
 
-          <div className="mt-5 space-y-4">
+          <div className="space-y-4">
             <label className="block">
               <span className="mb-2 flex items-center justify-between text-xs font-bold text-slate-500">
                 <span>透明度</span>
@@ -1212,16 +1978,378 @@ function LiveCaptionWorkspace({
           <div className="mt-5 space-y-2">
             <button type="button" onClick={() => onUpdateOverlaySettings({ showOriginal: !overlaySettings.showOriginal })} className="flex h-10 w-full items-center justify-between rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-800 transition hover:bg-slate-50 active:scale-[0.99]">
               原文
-              <span className={cn('h-5 w-9 rounded-full p-0.5 transition', overlaySettings.showOriginal ? 'bg-emerald-500' : 'bg-slate-200')}><span className={cn('block h-4 w-4 rounded-full bg-white transition', overlaySettings.showOriginal && 'translate-x-4')} /></span>
+              <span className={cn('h-5 w-9 rounded-full p-0.5 transition', overlaySettings.showOriginal ? 'bg-blue-500' : 'bg-slate-200')}><span className={cn('block h-4 w-4 rounded-full bg-white transition', overlaySettings.showOriginal && 'translate-x-4')} /></span>
             </button>
             <button type="button" onClick={() => onUpdateOverlaySettings({ compact: !overlaySettings.compact })} className="flex h-10 w-full items-center justify-between rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-800 transition hover:bg-slate-50 active:scale-[0.99]">
               紧凑
-              <span className={cn('h-5 w-9 rounded-full p-0.5 transition', overlaySettings.compact ? 'bg-emerald-500' : 'bg-slate-200')}><span className={cn('block h-4 w-4 rounded-full bg-white transition', overlaySettings.compact && 'translate-x-4')} /></span>
+              <span className={cn('h-5 w-9 rounded-full p-0.5 transition', overlaySettings.compact ? 'bg-blue-500' : 'bg-slate-200')}><span className={cn('block h-4 w-4 rounded-full bg-white transition', overlaySettings.compact && 'translate-x-4')} /></span>
+            </button>
+            <button type="button" onClick={() => onUpdateOverlaySettings({ scrollMode: !overlaySettings.scrollMode, visible: true })} className="flex h-10 w-full items-center justify-between rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-800 transition hover:bg-slate-50 active:scale-[0.99]">
+              滚动模式
+              <span className={cn('h-5 w-9 rounded-full p-0.5 transition', overlaySettings.scrollMode ? 'bg-blue-500' : 'bg-slate-200')}><span className={cn('block h-4 w-4 rounded-full bg-white transition', overlaySettings.scrollMode && 'translate-x-4')} /></span>
             </button>
           </div>
+
+          {overlaySettings.scrollMode && (
+            <label className="mt-5 block">
+              <span className="mb-2 flex items-center justify-between text-xs font-bold text-slate-500">
+                <span>展示句数</span>
+                <span>{overlaySettings.visibleLineCount} 句</span>
+              </span>
+              <input
+                type="range"
+                min="3"
+                max="9"
+                step="1"
+                value={overlaySettings.visibleLineCount}
+                onChange={(event) => onUpdateOverlaySettings({ visibleLineCount: Number(event.target.value), visible: true })}
+                className="w-full accent-slate-950"
+              />
+            </label>
+          )}
+        </section>
+
+        <section className="rounded-lg border border-slate-200 bg-white p-4">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <FileText className="h-5 w-5 text-blue-600" />
+              <h2 className="text-sm font-black text-slate-950">参考资料</h2>
+            </div>
+            <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-black text-blue-700">Beta</span>
+          </div>
+
+          <label className="flex min-h-24 cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-4 text-center transition hover:border-blue-300 hover:bg-blue-50/60">
+            <Upload className="h-5 w-5 text-slate-500" />
+            <span className="mt-2 text-sm font-black text-slate-900">上传翻译参考</span>
+            <span className="mt-1 text-xs leading-5 text-slate-500">txt / docx / pdf / xlsx · 2MB以内</span>
+            <input
+              type="file"
+              accept=".txt,.docx,.pdf,.xlsx,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              className="sr-only"
+              onChange={(event) => {
+                handleReferenceFileChange(event.target.files);
+                event.target.value = '';
+              }}
+            />
+          </label>
+
+          {referenceFileError && (
+            <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs font-semibold leading-5 text-red-700">{referenceFileError}</p>
+          )}
+
+          {referenceFile && (
+            <div className="mt-3 rounded-lg border border-blue-100 bg-blue-50 p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-black text-slate-950">{referenceFile.name}</p>
+                  <p className="mt-1 text-xs font-semibold text-blue-700">{referenceFile.extension.toUpperCase()} · {formatFileSize(referenceFile.size)} · 已作为参考</p>
+                </div>
+                <button type="button" onClick={clearReferenceFile} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-500 transition hover:bg-white hover:text-slate-900" aria-label="移除参考资料">
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          )}
         </section>
       </aside>
     </div>
+  );
+}
+
+function TranslationPreferencesWorkspace({
+  preferences,
+  terms,
+  customScenes,
+  isCustomSceneEditorOpen,
+  isTermEditorOpen,
+  isTermLibraryOpen,
+  editingTerm,
+  customSceneName,
+  customScenePrompt,
+  termOriginalText,
+  termTranslatedText,
+  termInstruction,
+  onUpdatePreferences,
+  onOpenCustomSceneEditor,
+  onCloseCustomSceneEditor,
+  onSaveCustomScene,
+  onOpenTermEditor,
+  onOpenTermLibrary,
+  onCloseTermEditor,
+  onCloseTermLibrary,
+  onSaveTerm,
+  onCustomSceneNameChange,
+  onCustomScenePromptChange,
+  onTermOriginalTextChange,
+  onTermTranslatedTextChange,
+  onTermInstructionChange,
+}: {
+  preferences: DesktopTranslationPreferences;
+  terms: TermEntry[];
+  customScenes: DesktopCustomScene[];
+  isCustomSceneEditorOpen: boolean;
+  isTermEditorOpen: boolean;
+  isTermLibraryOpen: boolean;
+  editingTerm: TermEntry | null;
+  customSceneName: string;
+  customScenePrompt: string;
+  termOriginalText: string;
+  termTranslatedText: string;
+  termInstruction: string;
+  onUpdatePreferences: (patch: Partial<DesktopTranslationPreferences>) => void;
+  onOpenCustomSceneEditor: () => void;
+  onCloseCustomSceneEditor: () => void;
+  onSaveCustomScene: () => void;
+  onOpenTermEditor: (term?: TermEntry) => void;
+  onOpenTermLibrary: () => void;
+  onCloseTermEditor: () => void;
+  onCloseTermLibrary: () => void;
+  onSaveTerm: () => void;
+  onCustomSceneNameChange: (value: string) => void;
+  onCustomScenePromptChange: (value: string) => void;
+  onTermOriginalTextChange: (value: string) => void;
+  onTermTranslatedTextChange: (value: string) => void;
+  onTermInstructionChange: (value: string) => void;
+}) {
+  return (
+    <div className="flex h-full min-h-0 items-start justify-center overflow-y-auto px-8 pb-10 pt-8">
+      <div className="grid w-full max-w-[1160px] grid-cols-[minmax(0,1fr)_minmax(380px,0.92fr)] gap-5">
+        <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm shadow-slate-200/50">
+          <div className="flex items-center justify-between gap-4 border-b border-slate-100 pb-4">
+            <div>
+              <h2 className="text-base font-black text-slate-950">默认翻译设置</h2>
+              <p className="mt-1 text-xs text-slate-500">这些设置会被 AI 通话和字幕同传共享。</p>
+            </div>
+          </div>
+
+          <div className="mt-5 space-y-5">
+            <div className="grid grid-cols-2 gap-4">
+              <label className="block space-y-2">
+                <span className="flex items-center gap-1.5 text-xs font-bold text-slate-500">
+                  <Languages className="h-3.5 w-3.5 text-blue-600" />
+                  默认源语言
+                </span>
+                <select value={preferences.sourceLanguage} onChange={(event) => onUpdatePreferences({ sourceLanguage: event.target.value as DesktopSourceLanguage })} className="h-11 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm font-semibold text-slate-800 outline-none focus:border-blue-300 focus:bg-white focus:ring-2 focus:ring-blue-100">
+                  {SOURCE_LANGUAGES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                </select>
+              </label>
+              <label className="block space-y-2">
+                <span className="flex items-center gap-1.5 text-xs font-bold text-slate-500">
+                  <Languages className="h-3.5 w-3.5 text-blue-600" />
+                  默认目标语言
+                </span>
+                <select value={preferences.targetLanguage} onChange={(event) => onUpdatePreferences({ targetLanguage: event.target.value as DesktopTargetLanguage })} className="h-11 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm font-semibold text-slate-800 outline-none focus:border-blue-300 focus:bg-white focus:ring-2 focus:ring-blue-100">
+                  {TARGET_LANGUAGES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                </select>
+              </label>
+            </div>
+
+            <div className="space-y-2">
+              <h3 className="flex items-center gap-2 text-sm font-black text-slate-950">
+                <ScrollText className="h-4 w-4 text-blue-600" />
+                译文风格
+              </h3>
+              <div className="grid grid-cols-3 gap-2">
+                {FORMALITY_OPTIONS.map((option) => (
+                  <button key={option.value} type="button" onClick={() => onUpdatePreferences({ translationFormality: option.value })} className={cn('rounded-lg border px-3 py-3 text-left transition', preferences.translationFormality === option.value ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50')}>
+                    <span className="block text-sm font-bold">{option.label}</span>
+                    <span className="mt-1 block text-xs leading-5 opacity-70">{option.description}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <h3 className="flex items-center gap-2 text-sm font-black text-slate-950">
+                <Type className="h-4 w-4 text-blue-600" />
+                显示与交互
+              </h3>
+              <div className="grid grid-cols-3 gap-2">
+                {SUBTITLE_SIZE_OPTIONS.map((option) => (
+                  <button key={option.value} type="button" onClick={() => onUpdatePreferences({ subtitleSize: option.value })} className={cn('rounded-lg border px-3 py-3 text-center text-sm font-bold transition', preferences.subtitleSize === option.value ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50')}>
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+              <PreferenceSwitch label="显示原文" checked={preferences.showOriginalText} onChange={() => onUpdatePreferences({ showOriginalText: !preferences.showOriginalText })} />
+              <PreferenceSwitch label="自动生成纪要" checked={preferences.autoGenerateSummary} onChange={() => onUpdatePreferences({ autoGenerateSummary: !preferences.autoGenerateSummary })} />
+              <PreferenceSwitch label="使用我的术语库" checked={preferences.useTermsLibrary} onChange={() => onUpdatePreferences({ useTermsLibrary: !preferences.useTermsLibrary })} />
+            </div>
+          </div>
+        </section>
+
+        <section className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm shadow-slate-200/50">
+          <div className="flex items-center justify-between gap-4 border-b border-slate-100 pb-4">
+            <div>
+              <h2 className="text-base font-black text-slate-950">对话场景与术语库</h2>
+              <p className="mt-1 text-xs text-slate-500">和移动端保持同一套场景与术语。</p>
+            </div>
+          </div>
+
+          <div className="mt-5 space-y-5">
+            <div className="space-y-2">
+              <h3 className="flex items-center gap-2 text-xs font-bold text-slate-500">
+                <MessageSquareText className="h-3.5 w-3.5 text-blue-600" />
+                对话场景
+              </h3>
+              <div className="flex flex-wrap gap-2">
+                {SCENES.map((scene) => (
+                  <button key={scene.id} type="button" onClick={() => onUpdatePreferences({ activeSceneId: scene.id })} className={cn('rounded-lg px-3 py-2 text-sm font-bold transition', preferences.activeSceneId === scene.id ? 'bg-slate-950 text-white' : 'border border-slate-200 bg-white text-slate-700 hover:bg-slate-50')}>
+                    {scene.name}
+                  </button>
+                ))}
+                {customScenes.map((scene) => (
+                  <button key={scene.id} type="button" onClick={() => onUpdatePreferences({ activeSceneId: scene.id })} className={cn('rounded-lg px-3 py-2 text-sm font-bold transition', preferences.activeSceneId === scene.id ? 'bg-slate-950 text-white' : 'border border-blue-100 bg-blue-50 text-blue-700 hover:bg-blue-100')}>
+                    {scene.name}
+                  </button>
+                ))}
+                <button type="button" onClick={onOpenCustomSceneEditor} className="rounded-lg border border-dashed border-slate-300 bg-white px-3 py-2 text-sm font-bold text-slate-500 transition hover:bg-slate-50">自定义场景</button>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="flex items-center gap-2 text-xs font-bold text-slate-500">
+                  <BookOpen className="h-3.5 w-3.5 text-blue-600" />
+                  我的术语库
+                </h3>
+                <button type="button" onClick={() => onUpdatePreferences({ useTermsLibrary: !preferences.useTermsLibrary })} className="flex items-center gap-2 text-xs font-bold text-slate-600">
+                  <span className={cn('h-5 w-9 rounded-full p-0.5 transition', preferences.useTermsLibrary ? 'bg-blue-500' : 'bg-slate-200')}><span className={cn('block h-4 w-4 rounded-full bg-white transition', preferences.useTermsLibrary && 'translate-x-4')} /></span>
+                </button>
+              </div>
+              {preferences.useTermsLibrary && (
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={onOpenTermLibrary} className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-500 transition hover:bg-slate-50">
+                    <Plus className="h-3.5 w-3.5" />
+                    自定义术语库
+                  </button>
+                  {terms.map((term) => (
+                    <button key={term.id} type="button" onClick={() => onOpenTermEditor(term)} className="rounded-full border border-blue-100 bg-blue-50 px-3 py-1.5 text-xs font-bold text-blue-700 transition hover:bg-blue-100">
+                      {term.zh}/{term.idText}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+          </div>
+        </section>
+      </div>
+
+      {isCustomSceneEditorOpen && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/40 p-4">
+          <div className="w-full max-w-xl rounded-lg bg-white p-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <h2 className="text-lg font-black text-slate-950">自定义场景</h2>
+                <p className="mt-1 text-sm leading-5 text-slate-500">设置场景名称和提示词，AI 会按这个场景处理翻译。</p>
+              </div>
+              <button type="button" onClick={onCloseCustomSceneEditor} aria-label="关闭" className="flex h-10 w-10 items-center justify-center rounded-lg bg-slate-100 text-slate-500 transition hover:bg-slate-200">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="mt-5 space-y-4">
+              <label className="block space-y-2">
+                <span className="block text-xs font-bold text-slate-500">场景名称</span>
+                <input value={customSceneName} onChange={(event) => onCustomSceneNameChange(event.target.value)} placeholder="例如：矿区接待客户" autoFocus className="h-12 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm outline-none focus:border-blue-500 focus:bg-white" />
+              </label>
+
+              <label className="block space-y-2">
+                <span className="block text-xs font-bold text-slate-500">场景提示词</span>
+                <textarea value={customScenePrompt} onChange={(event) => onCustomScenePromptChange(event.target.value)} rows={6} placeholder="说明这个场景下应该如何翻译、哪些内容要保留、语气应该怎样处理" className="w-full resize-none rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm leading-6 outline-none focus:border-blue-500 focus:bg-white" />
+              </label>
+
+              <button type="button" onClick={onSaveCustomScene} disabled={!customSceneName.trim() || !customScenePrompt.trim()} className="h-12 w-full rounded-lg bg-slate-950 text-sm font-bold text-white transition hover:bg-slate-800 disabled:bg-slate-200 disabled:text-slate-400">
+                保存场景
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isTermLibraryOpen && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/40 p-4">
+          <div className="flex max-h-[min(88vh,760px)] w-full max-w-2xl flex-col overflow-hidden rounded-lg bg-white shadow-2xl">
+            <div className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-100 p-5">
+              <div className="min-w-0">
+                <h2 className="text-lg font-black text-slate-950">自定义术语库</h2>
+                <p className="mt-1 text-sm leading-5 text-slate-500">管理术语译法和 AI 使用该译法的场合。</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button type="button" onClick={() => onOpenTermEditor()} className="rounded-lg bg-blue-600 px-3 py-2 text-xs font-bold text-white transition hover:bg-blue-700">
+                  新增术语
+                </button>
+                <button type="button" onClick={onCloseTermLibrary} aria-label="关闭" className="flex h-10 w-10 items-center justify-center rounded-lg bg-slate-100 text-slate-500 transition hover:bg-slate-200">
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+            </div>
+            <div className="min-h-0 flex-1 overflow-y-auto p-5">
+              <div className="space-y-2">
+                {terms.map((term) => (
+                  <button key={term.id} type="button" onClick={() => onOpenTermEditor(term)} className="flex w-full items-start justify-between gap-4 rounded-lg border border-slate-200 bg-white p-3 text-left transition hover:bg-slate-50">
+                    <span className="min-w-0">
+                      <span className="block text-sm font-bold text-slate-950">{term.zh}</span>
+                      <span className="mt-0.5 block text-xs text-blue-700">{term.idText}</span>
+                      <span className="mt-1 block text-xs leading-5 text-slate-500">{term.note}</span>
+                    </span>
+                    <Pencil className="h-4 w-4 shrink-0 text-slate-400" />
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isTermEditorOpen && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/40 p-4">
+          <div className="w-full max-w-lg max-h-[min(88vh,760px)] overflow-y-auto rounded-lg bg-white p-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <h2 className="text-lg font-black text-slate-950">{editingTerm ? '编辑术语' : '新增术语'}</h2>
+                <p className="mt-1 text-sm leading-5 text-slate-500">自定义原文、译文，以及 AI 使用该译法的场合。</p>
+              </div>
+              <button type="button" onClick={onCloseTermEditor} aria-label="关闭" className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-slate-500 transition hover:bg-slate-200">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="mt-5 space-y-4">
+              <label className="block space-y-2">
+                <span className="block text-xs font-bold text-slate-500">原文</span>
+                <input value={termOriginalText} onChange={(event) => onTermOriginalTextChange(event.target.value)} placeholder="例如：镍矿" autoFocus className="h-12 w-full rounded-2xl border border-slate-200 bg-slate-50 px-3 text-sm outline-none focus:border-blue-500 focus:bg-white" />
+              </label>
+
+              <label className="block space-y-2">
+                <span className="block text-xs font-bold text-slate-500">译文</span>
+                <input value={termTranslatedText} onChange={(event) => onTermTranslatedTextChange(event.target.value)} placeholder="例如：bijih nikel" className="h-12 w-full rounded-2xl border border-slate-200 bg-slate-50 px-3 text-sm outline-none focus:border-blue-500 focus:bg-white" />
+              </label>
+
+              <label className="block space-y-2">
+                <span className="block text-xs font-bold text-slate-500">翻译指示</span>
+                <textarea value={termInstruction} onChange={(event) => onTermInstructionChange(event.target.value)} rows={4} placeholder="说明 AI 在何种场合下可以使用此术语翻译" className="w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm leading-6 outline-none focus:border-blue-500 focus:bg-white" />
+                <span className="block text-xs leading-5 text-slate-400">翻译指示是告诉 AI 在何种场合下可以使用此术语翻译。</span>
+              </label>
+
+              <button type="button" onClick={onSaveTerm} disabled={!termOriginalText.trim() || !termTranslatedText.trim() || !termInstruction.trim()} className="h-12 w-full rounded-2xl bg-slate-950 text-sm font-bold text-white transition hover:bg-slate-800 disabled:bg-slate-200 disabled:text-slate-400">
+                保存术语
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PreferenceSwitch({ label, checked, onChange }: { label: string; checked: boolean; onChange: () => void }) {
+  return (
+    <button type="button" onClick={onChange} className="flex h-11 w-full items-center justify-between rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-800 transition hover:bg-slate-50">
+      {label}
+      <span className={cn('h-5 w-9 rounded-full p-0.5 transition', checked ? 'bg-blue-500' : 'bg-slate-200')}><span className={cn('block h-4 w-4 rounded-full bg-white transition', checked && 'translate-x-4')} /></span>
+    </button>
   );
 }
 
@@ -1231,6 +2359,18 @@ export function DesktopApp() {
   const [streamState, setStreamState] = useState<CaptionStreamState>(DEFAULT_CAPTION_STATE);
   const [captionLines, setCaptionLines] = useState<DesktopCaptionLine[]>([]);
   const [fallbackRunning, setFallbackRunning] = useState(false);
+  const [translationPreferences, setTranslationPreferences] = useState<DesktopTranslationPreferences>(readDesktopPreferences);
+  const [desktopTerms, setDesktopTerms] = useState<TermEntry[]>(() => readStoredValue(DESKTOP_TERMS_KEY, DEFAULT_TERMS));
+  const [desktopCustomScenes, setDesktopCustomScenes] = useState<DesktopCustomScene[]>(() => readStoredValue(DESKTOP_CUSTOM_SCENES_KEY, []));
+  const [isCustomSceneEditorOpen, setIsCustomSceneEditorOpen] = useState(false);
+  const [isTermEditorOpen, setIsTermEditorOpen] = useState(false);
+  const [isTermLibraryOpen, setIsTermLibraryOpen] = useState(false);
+  const [editingTerm, setEditingTerm] = useState<TermEntry | null>(null);
+  const [customSceneName, setCustomSceneName] = useState('矿区接待客户');
+  const [customScenePrompt, setCustomScenePrompt] = useState(DEFAULT_CUSTOM_SCENE_PROMPT);
+  const [termOriginalText, setTermOriginalText] = useState('');
+  const [termTranslatedText, setTermTranslatedText] = useState('');
+  const [termInstruction, setTermInstruction] = useState('');
 
   useEffect(() => {
     const api = window.knowlyDesktop;
@@ -1263,6 +2403,18 @@ export function DesktopApp() {
     }, 2400);
     return () => window.clearInterval(timer);
   }, [fallbackRunning]);
+
+  useEffect(() => {
+    writeStoredValue(DESKTOP_PREFERENCES_KEY, translationPreferences);
+  }, [translationPreferences]);
+
+  useEffect(() => {
+    writeStoredValue(DESKTOP_TERMS_KEY, desktopTerms);
+  }, [desktopTerms]);
+
+  useEffect(() => {
+    writeStoredValue(DESKTOP_CUSTOM_SCENES_KEY, desktopCustomScenes);
+  }, [desktopCustomScenes]);
 
   function updateOverlaySettings(settings: Partial<CaptionOverlaySettings>) {
     const api = window.knowlyDesktop;
@@ -1318,6 +2470,107 @@ export function DesktopApp() {
     void api.stopCaptionMockStream().then(setStreamState);
   }
 
+  function updateTranslationPreferences(patch: Partial<DesktopTranslationPreferences>) {
+    const next = { ...translationPreferences, ...patch };
+    const overlayPatch: Partial<CaptionOverlaySettings> = {};
+
+    if (patch.subtitleSize) {
+      Object.assign(overlayPatch, subtitleSizeToOverlayDefaults(next.subtitleSize));
+    }
+
+    if (typeof patch.showOriginalText === 'boolean') {
+      overlayPatch.showOriginal = next.showOriginalText;
+    }
+
+    setTranslationPreferences(next);
+
+    if (Object.keys(overlayPatch).length > 0 && !streamState.running) {
+      updateOverlaySettings(overlayPatch);
+    }
+  }
+
+  function openCustomSceneEditor() {
+    setCustomSceneName((current) => current || '矿区接待客户');
+    setCustomScenePrompt((current) => current || DEFAULT_CUSTOM_SCENE_PROMPT);
+    setIsCustomSceneEditorOpen(true);
+  }
+
+  function closeCustomSceneEditor() {
+    setIsCustomSceneEditorOpen(false);
+  }
+
+  function saveCustomScene() {
+    const name = customSceneName.trim();
+    const prompt = customScenePrompt.trim();
+    if (!name || !prompt) return;
+
+    const scene: DesktopCustomScene = {
+      id: `desktop-custom-scene-${Date.now()}`,
+      name,
+      prompt,
+    };
+    setDesktopCustomScenes((current) => [scene, ...current.filter((item) => item.name !== name)]);
+    setTranslationPreferences((current) => ({ ...current, activeSceneId: scene.id }));
+    setIsCustomSceneEditorOpen(false);
+  }
+
+  function openTermEditor(term?: TermEntry) {
+    setEditingTerm(term ?? null);
+    setTermOriginalText(term?.zh ?? '');
+    setTermTranslatedText(term?.idText ?? '');
+    setTermInstruction(term?.note ?? '');
+    setIsTermEditorOpen(true);
+  }
+
+  function openTermLibrary() {
+    setIsTermLibraryOpen(true);
+  }
+
+  function closeTermEditor() {
+    setIsTermEditorOpen(false);
+    setEditingTerm(null);
+    setTermOriginalText('');
+    setTermTranslatedText('');
+    setTermInstruction('');
+  }
+
+  function closeTermLibrary() {
+    setIsTermLibraryOpen(false);
+  }
+
+  function saveTermEditor() {
+    const zh = termOriginalText.trim();
+    const idText = termTranslatedText.trim();
+    const note = termInstruction.trim();
+    if (!zh || !idText || !note) return;
+
+    if (!editingTerm) {
+      setDesktopTerms((current) => [
+        {
+          id: `desktop-term-${Date.now()}`,
+          zh,
+          idText,
+          category: '自定义',
+          note,
+          source: 'user',
+          createdAt: new Date().toISOString(),
+        },
+        ...current,
+      ]);
+      closeTermEditor();
+      return;
+    }
+
+    setDesktopTerms((current) =>
+      current.map((term) =>
+        term.id === editingTerm.id
+          ? { ...term, zh, idText, note, source: term.source === 'default' ? 'user' : term.source }
+          : term,
+      ),
+    );
+    closeTermEditor();
+  }
+
   function showOverlay() {
     const api = window.knowlyDesktop;
     if (!api) {
@@ -1339,12 +2592,16 @@ export function DesktopApp() {
   return (
     <DesktopShell activeView={activeView} onChangeView={setActiveView}>
       {activeView === 'call' ? (
-        <AiCallWorkspace />
-      ) : (
+        <AiCallWorkspace
+          preferences={translationPreferences}
+          onOpenPreferences={() => setActiveView('preferences')}
+        />
+      ) : activeView === 'captions' ? (
         <LiveCaptionWorkspace
           lines={captionLines}
           streamState={streamState}
           overlaySettings={overlaySettings}
+          preferences={translationPreferences}
           onStart={startCaptionStream}
           onPause={pauseCaptionStream}
           onResume={resumeCaptionStream}
@@ -1352,6 +2609,36 @@ export function DesktopApp() {
           onShowOverlay={showOverlay}
           onHideOverlay={hideOverlay}
           onUpdateOverlaySettings={updateOverlaySettings}
+          onOpenPreferences={() => setActiveView('preferences')}
+        />
+      ) : (
+        <TranslationPreferencesWorkspace
+          preferences={translationPreferences}
+          terms={desktopTerms}
+          customScenes={desktopCustomScenes}
+          isCustomSceneEditorOpen={isCustomSceneEditorOpen}
+          isTermEditorOpen={isTermEditorOpen}
+          isTermLibraryOpen={isTermLibraryOpen}
+          editingTerm={editingTerm}
+          customSceneName={customSceneName}
+          customScenePrompt={customScenePrompt}
+          termOriginalText={termOriginalText}
+          termTranslatedText={termTranslatedText}
+          termInstruction={termInstruction}
+          onUpdatePreferences={updateTranslationPreferences}
+          onOpenCustomSceneEditor={openCustomSceneEditor}
+          onCloseCustomSceneEditor={closeCustomSceneEditor}
+          onSaveCustomScene={saveCustomScene}
+          onOpenTermEditor={openTermEditor}
+          onOpenTermLibrary={openTermLibrary}
+          onCloseTermEditor={closeTermEditor}
+          onCloseTermLibrary={closeTermLibrary}
+          onSaveTerm={saveTermEditor}
+          onCustomSceneNameChange={setCustomSceneName}
+          onCustomScenePromptChange={setCustomScenePrompt}
+          onTermOriginalTextChange={setTermOriginalText}
+          onTermTranslatedTextChange={setTermTranslatedText}
+          onTermInstructionChange={setTermInstruction}
         />
       )}
     </DesktopShell>
