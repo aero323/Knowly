@@ -32,7 +32,6 @@ export interface CaptionOverlaySettings {
   fontScale: number;
   showOriginal: boolean;
   showTranslation: boolean;
-  compact: boolean;
   scrollMode: boolean;
   visibleLineCount: number;
   fullscreen: boolean;

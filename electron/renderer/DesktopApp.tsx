@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   ArrowLeft,
   ArrowRight,
@@ -92,6 +92,20 @@ interface ReferenceFileState {
   size: number;
   extension: string;
   uploadedAt: string;
+}
+
+interface DesktopCaptionSession {
+  id: string;
+  title: string;
+  startedAt: string;
+  endedAt: string;
+  sourceDevice: string;
+  sourceLanguage: DesktopSourceLanguage;
+  targetLanguage: DesktopTargetLanguage;
+  preferenceSummary: string;
+  lines: DesktopCaptionLine[];
+  turns: ConversationTurn[];
+  summary: SessionSummary;
 }
 
 interface DesktopCallDraft {
@@ -258,8 +272,7 @@ const DEFAULT_OVERLAY_SETTINGS: CaptionOverlaySettings = {
   fontScale: 1,
   showOriginal: true,
   showTranslation: true,
-  compact: false,
-  scrollMode: false,
+  scrollMode: true,
   visibleLineCount: 5,
   fullscreen: false,
 };
@@ -276,7 +289,8 @@ const DEFAULT_CAPTION_STATE: CaptionStreamState = {
 const DESKTOP_PREFERENCES_KEY = 'knowly.desktop.translationPreferences.v1';
 const DESKTOP_TERMS_KEY = 'knowly.desktop.terms.v1';
 const DESKTOP_CUSTOM_SCENES_KEY = 'knowly.desktop.customScenes.v1';
-const REFERENCE_FILE_LIMIT_BYTES = 2 * 1024 * 1024;
+const DESKTOP_CAPTION_SESSIONS_KEY = 'knowly.desktop.captionSessions.v1';
+const REFERENCE_FILE_LIMIT_BYTES = 5 * 1024 * 1024;
 const REFERENCE_FILE_EXTENSIONS = ['txt', 'docx', 'pdf', 'xlsx'] as const;
 const DEFAULT_CUSTOM_SCENE_PROMPT = '请根据当前业务场景调整翻译：优先保留关键专有名词、金额、时间、单据名称和责任方；语气保持清楚、礼貌、可直接用于商务沟通。';
 
@@ -317,7 +331,7 @@ const FORMALITY_OPTIONS: Array<{ value: DesktopTranslationFormality; label: stri
 ];
 
 const SUBTITLE_SIZE_OPTIONS: Array<{ value: DesktopSubtitleSize; label: string }> = [
-  { value: 'compact', label: '紧凑' },
+  { value: 'compact', label: '小字' },
   { value: 'standard', label: '标准' },
   { value: 'large', label: '大字' },
 ];
@@ -348,10 +362,97 @@ function desktopCaptionTemporarySummary(sourceLanguage: DesktopSourceLanguage, t
   return `临时设置 · ${source} → ${target}`;
 }
 
-function subtitleSizeToOverlayDefaults(size: DesktopSubtitleSize): Pick<CaptionOverlaySettings, 'compact' | 'fontScale'> {
-  if (size === 'compact') return { compact: true, fontScale: 0.9 };
-  if (size === 'large') return { compact: false, fontScale: 1.18 };
-  return { compact: false, fontScale: 1 };
+function subtitleSizeToOverlayDefaults(size: DesktopSubtitleSize): Pick<CaptionOverlaySettings, 'fontScale'> {
+  if (size === 'compact') return { fontScale: 0.9 };
+  if (size === 'large') return { fontScale: 1.18 };
+  return { fontScale: 1 };
+}
+
+function captionLinesToTurns(lines: DesktopCaptionLine[]): ConversationTurn[] {
+  return lines.map((line) => ({
+    id: `desktop-caption-turn-${line.id}`,
+    speaker: line.speakerId === 'speaker-1' ? 'me' : 'counterpart',
+    sourceLanguage: line.sourceLanguage,
+    targetLanguage: line.targetLanguage,
+    sourceText: line.originalText,
+    translatedText: line.translatedText,
+    terms: line.keywords,
+  }));
+}
+
+function simultaneousCaptionTodos(turns: ConversationTurn[], fallbackTodos: string[]) {
+  const terms = new Set(turns.flatMap((turn) => turn.terms));
+  const todos = [
+    terms.has('发票') || terms.has('装箱单') ? '跟进发票和装箱单在约定时间前发出' : '',
+    terms.has('船期') || terms.has('港口确认') ? '再次确认船期和港口状态' : '',
+    terms.has('滞港费') || terms.has('费用承担') ? '书面确认滞港费责任方' : '',
+  ].filter(Boolean);
+
+  return todos.length > 0 ? todos : fallbackTodos;
+}
+
+function makeDesktopCaptionTitle(turns: ConversationTurn[]) {
+  const terms = new Set(turns.flatMap((turn) => turn.terms));
+  const text = turns.map((turn) => `${turn.sourceText} ${turn.translatedText}`).join(' ');
+
+  if (terms.has('船期') || terms.has('港口确认') || /船期|港口|kapal|pelabuhan/i.test(text)) {
+    return '船期与港口确认';
+  }
+
+  if (terms.has('DP') || /付款|到账|DP|payment|transfer/i.test(text)) {
+    return '付款节点确认';
+  }
+
+  if (terms.has('发票') || terms.has('装箱单') || /发票|装箱单|invoice|packing list/i.test(text)) {
+    return '单据交付确认';
+  }
+
+  if (terms.has('滞港费') || terms.has('费用承担') || /滞港费|费用承担|demurrage/i.test(text)) {
+    return '滞港费责任确认';
+  }
+
+  if (terms.has('清关') || /清关|海关|bea cukai|customs/i.test(text)) {
+    return '清关资料沟通';
+  }
+
+  if (terms.has('镍矿') || /镍矿|bijih nikel/i.test(text)) {
+    return '镍矿业务沟通';
+  }
+
+  const firstTranslatedText = turns.find((turn) => turn.translatedText.trim())?.translatedText.trim() ?? '';
+  if (firstTranslatedText) {
+    return firstTranslatedText.replace(/[。！？.!?].*$/, '').slice(0, 14);
+  }
+
+  return '同传沟通纪要';
+}
+
+function makeDesktopCaptionSummary(turns: ConversationTurn[]): SessionSummary {
+  const baseSummary = makeSummary(turns);
+  const terms = Array.from(new Set(turns.flatMap((turn) => turn.terms))).slice(0, 8);
+
+  return {
+    ...baseSummary,
+    title: makeDesktopCaptionTitle(turns),
+    minutes: [
+      '本次同声传译已整理为双语纪要。',
+      terms.length > 0 ? `重点涉及 ${terms.slice(0, 5).join('、')}。` : '已整理关键内容、确认事项和后续跟进。',
+      ...baseSummary.minutes.slice(0, 2),
+    ],
+    todos: simultaneousCaptionTodos(turns, baseSummary.todos),
+    terms,
+  };
+}
+
+function captionSummaryMinutes(minutes: string[]) {
+  return minutes.map((minute) => (
+    /共记录\s*\d+\s*条双语字幕/.test(minute) ? '本次同声传译已整理为双语纪要。' : minute
+  ));
+}
+
+function captionSessionTitle(session: DesktopCaptionSession) {
+  if (session.title && session.title !== '同声传译纪要') return session.title;
+  return makeDesktopCaptionTitle(session.turns.length ? session.turns : captionLinesToTurns(session.lines));
 }
 
 function readDesktopPreferences() {
@@ -384,6 +485,25 @@ function formatDuration(seconds: number) {
 function formatFileSize(bytes: number) {
   if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+function formatSessionTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '--';
+  return date.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function formatSessionDuration(startedAt: string, endedAt: string) {
+  const started = new Date(startedAt).getTime();
+  const ended = new Date(endedAt).getTime();
+  if (Number.isNaN(started) || Number.isNaN(ended)) return '--';
+  const seconds = Math.max(0, Math.round((ended - started) / 1000));
+  return formatDuration(seconds);
 }
 
 function getContactMeta(contact: (typeof CONTACTS)[number]) {
@@ -436,7 +556,7 @@ function IconButton({
 function StatusPill({ running, paused }: { running: boolean; paused: boolean }) {
   return (
     <span className={cn(
-      'inline-flex h-8 items-center gap-2 rounded-full border px-3 text-xs font-semibold',
+      'inline-flex h-8 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 text-xs font-semibold',
       running && !paused && 'border-emerald-200 bg-emerald-50 text-emerald-700',
       running && paused && 'border-amber-200 bg-amber-50 text-amber-700',
       !running && 'border-slate-200 bg-slate-50 text-slate-500',
@@ -1354,10 +1474,11 @@ function AiCallWorkspace({
 
   function renderHomePanel() {
     return (
-      <div className="flex h-full min-h-0 items-start justify-center px-8 pb-14 pt-[18vh]">
-        <div className="w-full max-w-[1160px]">
-          <section className="rounded-lg border border-slate-200 bg-white px-10 py-10 shadow-lg shadow-blue-100/45">
-            <div className="flex h-16 items-center justify-between gap-5 rounded-lg border border-slate-200 bg-blue-50/50 px-5">
+      <div className="flex h-full min-h-0 overflow-y-auto px-6 py-6">
+        <div className="flex min-h-full w-full">
+        <div className="m-auto w-full max-w-[1160px] py-2">
+          <section className="rounded-lg border border-slate-200 bg-white px-[clamp(1.5rem,3vw,2.5rem)] py-[clamp(1.5rem,3vh,2.5rem)] shadow-lg shadow-blue-100/45">
+            <div className="flex min-h-14 flex-wrap items-center justify-between gap-4 rounded-lg border border-slate-200 bg-blue-50/50 px-5 py-3">
               <div className="flex min-w-0 items-center gap-3">
                 <span className="text-sm font-bold text-slate-600">我的通话 ID</span>
                 <span className="font-mono text-2xl font-black tracking-wider text-slate-950">{INVITE_CODE}</span>
@@ -1369,16 +1490,16 @@ function AiCallWorkspace({
               {renderTranslationPreferenceControl('shrink-0')}
             </div>
 
-            <div className="mt-14 flex items-center justify-center gap-8">
-              <button type="button" onClick={() => openLobby('voice')} className="flex h-16 min-w-52 items-center justify-center gap-3 rounded-lg bg-slate-950 px-8 text-lg font-bold text-white transition hover:bg-slate-800 active:scale-[0.98]">
+            <div className="mt-[clamp(1.75rem,5vh,3.5rem)] flex flex-wrap items-center justify-center gap-[clamp(1rem,2.2vw,2rem)]">
+              <button type="button" onClick={() => openLobby('voice')} className="flex h-14 min-w-48 items-center justify-center gap-3 rounded-lg bg-slate-950 px-7 text-base font-bold text-white transition hover:bg-slate-800 active:scale-[0.98] xl:h-16 xl:min-w-52 xl:px-8 xl:text-lg">
                 <Phone className="h-6 w-6" />
                 语音通话
               </button>
-              <button type="button" onClick={() => openLobby('video')} className="flex h-16 min-w-52 items-center justify-center gap-3 rounded-lg border border-slate-200 bg-white px-8 text-lg font-bold text-slate-900 transition hover:bg-slate-50 active:scale-[0.98]">
+              <button type="button" onClick={() => openLobby('video')} className="flex h-14 min-w-48 items-center justify-center gap-3 rounded-lg border border-slate-200 bg-white px-7 text-base font-bold text-slate-900 transition hover:bg-slate-50 active:scale-[0.98] xl:h-16 xl:min-w-52 xl:px-8 xl:text-lg">
                 <Video className="h-6 w-6" />
                 视频通话
               </button>
-              <div className="flex h-16 min-w-[370px] overflow-hidden rounded-lg border border-slate-200 bg-blue-50/50">
+              <div className="flex h-14 min-w-[320px] flex-1 overflow-hidden rounded-lg border border-slate-200 bg-blue-50/50 xl:h-16 xl:min-w-[370px]">
                 <input value={joinCode} onChange={(event) => setJoinCode(event.target.value.toUpperCase())} placeholder="输入通话 ID" className="h-full min-w-0 flex-1 bg-transparent px-5 font-mono text-base font-bold tracking-wider text-slate-900 outline-none placeholder:text-slate-400" />
                 <button type="button" disabled={!joinCode.trim()} onClick={joinCall} className="flex h-full w-32 items-center justify-center gap-2 bg-blue-600 text-base font-bold text-white transition hover:bg-blue-700 active:scale-[0.98] disabled:bg-blue-300">
                   加入
@@ -1387,11 +1508,11 @@ function AiCallWorkspace({
               </div>
             </div>
 
-            <div className="my-10 border-t border-slate-200" />
+            <div className="my-[clamp(1.75rem,4vh,2.5rem)] border-t border-slate-200" />
 
-            <div className="grid grid-cols-[minmax(0,1fr)_minmax(360px,0.95fr)] gap-10">
+            <div className="grid grid-cols-[minmax(0,1fr)_minmax(320px,0.9fr)] gap-[clamp(1.5rem,3vw,2.5rem)]">
               <section className="min-w-0">
-                <div className="mb-7 flex items-center justify-between">
+                <div className="mb-[clamp(1rem,2.5vh,1.75rem)] flex items-center justify-between">
                   <div>
                     <h2 className="text-base font-black text-slate-950">联系人与最近通话</h2>
                     <button type="button" onClick={() => setIsAllContactsOpen(true)} className="mt-1 text-xs font-bold text-blue-600 transition hover:text-blue-700">
@@ -1414,17 +1535,17 @@ function AiCallWorkspace({
                   </div>
                 )}
 
-                <div className="space-y-7">
+                <div className="space-y-[clamp(1rem,2.4vh,1.75rem)]">
                   {displayedContacts.slice(0, 2).map((contact) => renderCompactContactRow(contact, true))}
                 </div>
               </section>
 
-              <aside className="rounded-lg border border-slate-200 bg-blue-50/55 p-8">
-                <div className="mb-8 flex items-center gap-4">
+              <aside className="self-center rounded-lg border border-slate-200 bg-blue-50/55 p-[clamp(1.25rem,2.6vw,2rem)]">
+                <div className="mb-[clamp(1.25rem,3vh,2rem)] flex items-center gap-4">
                   <Languages className="h-8 w-8 text-blue-600" />
-                  <h3 className="text-2xl font-black text-slate-950">AI 辅助已就绪</h3>
+                  <h3 className="text-xl font-black text-slate-950 xl:text-2xl">AI 辅助已就绪</h3>
                 </div>
-                <div className="space-y-6 text-sm font-semibold text-slate-700">
+                <div className="space-y-[clamp(1rem,2.5vh,1.5rem)] text-sm font-semibold text-slate-700">
                   <p className="flex items-center gap-3"><CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" /> 双语字幕将在通话中自动生成</p>
                   <p className="flex items-center gap-3"><CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" /> {preferences.autoGenerateSummary ? '结束后生成纪要与待办' : '结束后可手动整理纪要'}</p>
                   <p className="flex items-center gap-3"><CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" /> 当前仅支持双人通话</p>
@@ -1444,6 +1565,7 @@ function AiCallWorkspace({
           {renderPendingCallDialog()}
           {renderHistoryDialog()}
           {renderAllContactsDialog()}
+        </div>
         </div>
       </div>
     );
@@ -1740,6 +1862,7 @@ function LiveCaptionWorkspace({
   streamState,
   overlaySettings,
   preferences,
+  captionSessions,
   onStart,
   onPause,
   onResume,
@@ -1747,12 +1870,14 @@ function LiveCaptionWorkspace({
   onShowOverlay,
   onHideOverlay,
   onUpdateOverlaySettings,
+  onUpdateCaptionSession,
   onOpenPreferences,
 }: {
   lines: DesktopCaptionLine[];
   streamState: CaptionStreamState;
   overlaySettings: CaptionOverlaySettings;
   preferences: DesktopTranslationPreferences;
+  captionSessions: DesktopCaptionSession[];
   onStart: (options: StartCaptionStreamOptions) => void;
   onPause: () => void;
   onResume: () => void;
@@ -1760,6 +1885,7 @@ function LiveCaptionWorkspace({
   onShowOverlay: () => void;
   onHideOverlay: () => void;
   onUpdateOverlaySettings: (settings: Partial<CaptionOverlaySettings>) => void;
+  onUpdateCaptionSession: (session: DesktopCaptionSession) => void;
   onOpenPreferences: () => void;
 }) {
   const [sourceDevice, setSourceDevice] = useState(streamState.sourceDevice);
@@ -1768,7 +1894,13 @@ function LiveCaptionWorkspace({
   const [useTranslationPreferences, setUseTranslationPreferences] = useState(true);
   const [referenceFile, setReferenceFile] = useState<ReferenceFileState | null>(null);
   const [referenceFileError, setReferenceFileError] = useState('');
+  const [selectedSessionId, setSelectedSessionId] = useState('');
+  const [editingCaptionLineId, setEditingCaptionLineId] = useState('');
+  const [captionTranslationDraft, setCaptionTranslationDraft] = useState('');
+  const [rememberedCaptionLineId, setRememberedCaptionLineId] = useState('');
   const activeLine = lines[lines.length - 1];
+  const safeCaptionSessions = captionSessions ?? [];
+  const selectedSession = safeCaptionSessions.find((session) => session.id === selectedSessionId) ?? null;
   const sessionPreferenceSummary = useTranslationPreferences
     ? desktopCaptionSessionSummary(preferences, sourceLanguage, targetLanguage)
     : desktopCaptionTemporarySummary(sourceLanguage, targetLanguage);
@@ -1809,7 +1941,7 @@ function LiveCaptionWorkspace({
     }
 
     if (file.size > REFERENCE_FILE_LIMIT_BYTES) {
-      setReferenceFileError('文件需小于 2MB');
+      setReferenceFileError('文件需小于 5MB');
       return;
     }
 
@@ -1827,6 +1959,218 @@ function LiveCaptionWorkspace({
     setReferenceFileError('');
   }
 
+  function openCaptionSession(sessionId: string) {
+    setSelectedSessionId(sessionId);
+    setEditingCaptionLineId('');
+    setCaptionTranslationDraft('');
+    setRememberedCaptionLineId('');
+  }
+
+  function closeCaptionSession() {
+    setSelectedSessionId('');
+    setEditingCaptionLineId('');
+    setCaptionTranslationDraft('');
+    setRememberedCaptionLineId('');
+  }
+
+  function startCaptionCorrection(line: DesktopCaptionLine) {
+    setEditingCaptionLineId(line.id);
+    setCaptionTranslationDraft(line.translatedText);
+  }
+
+  function cancelCaptionCorrection() {
+    setEditingCaptionLineId('');
+    setCaptionTranslationDraft('');
+  }
+
+  function saveCaptionCorrection(session: DesktopCaptionSession, lineId: string) {
+    const correctedText = captionTranslationDraft.trim();
+    if (!correctedText) return;
+
+    const nextLines = session.lines.map((line) => (
+      line.id === lineId ? { ...line, translatedText: correctedText } : line
+    ));
+    onUpdateCaptionSession({
+      ...session,
+      lines: nextLines,
+      turns: captionLinesToTurns(nextLines),
+    });
+    setEditingCaptionLineId('');
+    setCaptionTranslationDraft('');
+    setRememberedCaptionLineId(lineId);
+    window.setTimeout(() => setRememberedCaptionLineId((current) => current === lineId ? '' : current), 1600);
+  }
+
+  function renderCaptionHistorySection() {
+    const latestSession = safeCaptionSessions[0];
+
+    return (
+      <section className="rounded-lg border border-slate-200 bg-white p-4">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <History className="h-5 w-5 text-blue-600" />
+            <h2 className="text-sm font-black text-slate-950">纪要与历史</h2>
+          </div>
+        </div>
+
+        {streamState.running && (
+          <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2">
+            <p className="text-sm font-black text-slate-950">本次同传</p>
+            <p className="mt-1 text-xs font-semibold text-blue-700">结束后生成纪要并保存到历史</p>
+          </div>
+        )}
+
+        {!streamState.running && latestSession && (
+          <button
+            type="button"
+            onClick={() => openCaptionSession(latestSession.id)}
+            className="w-full rounded-lg border border-blue-100 bg-blue-50 p-3 text-left transition hover:bg-blue-100/70"
+          >
+            <span className="block text-sm font-black text-slate-950">最近纪要</span>
+            <span className="mt-1 block truncate text-xs font-semibold text-blue-700">{captionSessionTitle(latestSession)}</span>
+            <span className="mt-2 block text-[11px] font-semibold text-slate-500">{formatSessionTime(latestSession.endedAt)}</span>
+          </button>
+        )}
+
+        <div className="mt-3 space-y-2">
+          {safeCaptionSessions.slice(0, 4).map((session) => (
+            <button
+              key={session.id}
+              type="button"
+              onClick={() => openCaptionSession(session.id)}
+              className="flex w-full items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 text-left transition hover:bg-slate-50"
+            >
+              <span className="min-w-0">
+                <span className="block truncate text-xs font-black text-slate-900">{captionSessionTitle(session)}</span>
+                <span className="mt-0.5 block text-[11px] font-semibold text-slate-500">{formatSessionTime(session.endedAt)}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+
+        {safeCaptionSessions.length === 0 && !streamState.running && (
+          <p className="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-center text-xs font-semibold leading-5 text-slate-500">暂无历史记录</p>
+        )}
+      </section>
+    );
+  }
+
+  function renderCaptionSessionDialog() {
+    if (!selectedSession) return null;
+
+    return (
+      <div className="fixed inset-0 z-[75] flex items-center justify-center bg-slate-950/40 p-6">
+        <div className="flex max-h-[min(88vh,780px)] w-full max-w-5xl flex-col overflow-hidden rounded-lg bg-white shadow-2xl">
+          <div className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-100 p-5">
+            <div className="min-w-0">
+              <h3 className="truncate text-lg font-black text-slate-950">{captionSessionTitle(selectedSession)}</h3>
+              <p className="mt-1 text-sm font-semibold text-slate-500">
+                {formatSessionTime(selectedSession.endedAt)} · {formatSessionDuration(selectedSession.startedAt, selectedSession.endedAt)}
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <button type="button" onClick={closeCaptionSession} className="flex h-10 w-10 items-center justify-center rounded-lg bg-slate-100 text-slate-500 transition hover:bg-slate-200" aria-label="关闭">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+          </div>
+
+          <div className="grid min-h-0 flex-1 grid-cols-[340px_minmax(0,1fr)] bg-slate-50">
+            <aside className="min-h-0 overflow-y-auto border-r border-slate-200 bg-white p-5">
+              <section>
+                <h4 className="text-xs font-black text-slate-500">摘要</h4>
+                <div className="mt-3 space-y-2">
+                  {captionSummaryMinutes(selectedSession.summary.minutes).map((minute) => (
+                    <p key={minute} className="rounded-lg bg-slate-50 px-3 py-2 text-sm font-semibold leading-6 text-slate-700">{minute}</p>
+                  ))}
+                </div>
+              </section>
+
+              <section className="mt-5">
+                <h4 className="text-xs font-black text-slate-500">待办事项</h4>
+                <div className="mt-3 space-y-2">
+                  {selectedSession.summary.todos.map((todo) => (
+                    <label key={todo} className="flex min-h-10 items-center gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800">
+                      <input type="checkbox" className="h-4 w-4 rounded border-amber-200" />
+                      <span>{todo}</span>
+                    </label>
+                  ))}
+                </div>
+              </section>
+
+              {selectedSession.summary.terms.length > 0 && (
+                <section className="mt-5">
+                  <h4 className="text-xs font-black text-slate-500">沉淀术语</h4>
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    {selectedSession.summary.terms.map((term) => (
+                      <span key={term} className="rounded-full bg-blue-50 px-2 py-1 text-[11px] font-bold text-blue-700">{term}</span>
+                    ))}
+                  </div>
+                </section>
+              )}
+            </aside>
+
+            <section className="min-h-0 overflow-y-auto p-5">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
+                  <h4 className="text-sm font-black text-slate-950">转写记录</h4>
+                  <p className="mt-1 text-xs font-semibold text-slate-500">{selectedSession.preferenceSummary}</p>
+                </div>
+                <span className="rounded-lg bg-white px-3 py-2 text-xs font-bold text-slate-500">{selectedSession.sourceDevice}</span>
+              </div>
+
+              <div className="space-y-3">
+                {selectedSession.lines.map((line) => {
+                  const isEditing = editingCaptionLineId === line.id;
+                  const speaker = line.speakerId === 'speaker-1' ? '说话人 1' : '说话人 2';
+
+                  return (
+                    <article key={line.id} className="rounded-lg border border-slate-200 bg-white p-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="min-w-0 truncate text-xs font-black text-slate-500">{speaker}</p>
+                        <p className="shrink-0 font-mono text-[11px] font-semibold text-slate-400">{line.startedAt}</p>
+                      </div>
+                      <p className="mt-3 text-sm leading-6 text-slate-700">{line.originalText}</p>
+
+                      {isEditing ? (
+                        <div className="mt-3 space-y-2 rounded-lg bg-blue-50 p-2">
+                          <textarea
+                            value={captionTranslationDraft}
+                            onChange={(event) => setCaptionTranslationDraft(event.target.value)}
+                            className="min-h-24 w-full resize-none rounded-lg border border-blue-100 bg-white p-3 text-sm leading-6 text-blue-900 outline-none focus:ring-2 focus:ring-blue-200"
+                            autoFocus
+                          />
+                          <div className="flex justify-end gap-2">
+                            <button type="button" onClick={cancelCaptionCorrection} className="h-9 rounded-lg px-3 text-xs font-bold text-slate-500 transition hover:bg-white">
+                              取消
+                            </button>
+                            <button type="button" onClick={() => saveCaptionCorrection(selectedSession, line.id)} className="h-9 rounded-lg bg-blue-600 px-3 text-xs font-bold text-white transition hover:bg-blue-700">
+                              保存订正
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="mt-3 rounded-lg bg-blue-50 p-3">
+                          <p className="text-sm font-semibold leading-6 text-blue-800">{line.translatedText}</p>
+                          <div className="mt-2 flex items-center justify-between gap-2">
+                            <p className="text-[11px] font-bold text-emerald-600">{rememberedCaptionLineId === line.id ? '已写入记忆' : ''}</p>
+                            <button type="button" onClick={() => startCaptionCorrection(line)} className="h-8 rounded-lg px-2 text-xs font-bold text-blue-700 transition hover:bg-blue-100">
+                              订正
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </article>
+                  );
+                })}
+              </div>
+            </section>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="grid h-full min-h-0 grid-cols-[minmax(0,1fr)_380px] gap-5">
       <section className="flex min-h-0 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white">
@@ -1834,7 +2178,7 @@ function LiveCaptionWorkspace({
           <div className="flex items-center gap-3">
             <StatusPill running={streamState.running} paused={streamState.paused} />
           </div>
-          <div className="flex min-w-0 items-center gap-2">
+          <div className="flex min-w-0 flex-1 items-center justify-end gap-2">
             <div className="flex h-10 min-w-0 max-w-[520px] items-center overflow-hidden rounded-lg border border-slate-200 bg-white text-xs font-bold text-slate-700 transition hover:border-blue-200">
               <button
                 type="button"
@@ -1853,19 +2197,19 @@ function LiveCaptionWorkspace({
               </button>
             </div>
             {!streamState.running && (
-              <button type="button" onClick={() => onStart({ sourceDevice, sourceLanguage, targetLanguage })} className="flex h-10 items-center gap-2 rounded-lg bg-blue-600 px-4 text-sm font-bold text-white transition hover:bg-blue-700 active:scale-[0.98]">
+              <button type="button" onClick={() => onStart({ sourceDevice, sourceLanguage, targetLanguage })} className="flex h-10 shrink-0 items-center gap-2 whitespace-nowrap rounded-lg bg-blue-600 px-4 text-sm font-bold text-white transition hover:bg-blue-700 active:scale-[0.98]">
                 <Play className="h-4 w-4" />
                 开始
               </button>
             )}
             {streamState.running && !streamState.paused && (
-              <button type="button" onClick={onPause} className="flex h-10 items-center gap-2 rounded-lg border border-slate-200 bg-white px-4 text-sm font-bold text-slate-800 transition hover:bg-slate-50 active:scale-[0.98]">
+              <button type="button" onClick={onPause} className="flex h-10 shrink-0 items-center gap-2 whitespace-nowrap rounded-lg border border-slate-200 bg-white px-4 text-sm font-bold text-slate-800 transition hover:bg-slate-50 active:scale-[0.98]">
                 <Pause className="h-4 w-4" />
                 暂停
               </button>
             )}
             {streamState.running && streamState.paused && (
-              <button type="button" onClick={onResume} className="flex h-10 items-center gap-2 rounded-lg bg-slate-950 px-4 text-sm font-bold text-white transition hover:bg-slate-800 active:scale-[0.98]">
+              <button type="button" onClick={onResume} className="flex h-10 shrink-0 items-center gap-2 whitespace-nowrap rounded-lg bg-slate-950 px-4 text-sm font-bold text-white transition hover:bg-slate-800 active:scale-[0.98]">
                 <Play className="h-4 w-4" />
                 继续
               </button>
@@ -1952,6 +2296,8 @@ function LiveCaptionWorkspace({
           </div>
         </section>
 
+        {renderCaptionHistorySection()}
+
         <section className="rounded-lg border border-slate-200 bg-white p-4">
           <div className="mb-4 flex items-center gap-2">
             <PanelRight className="h-5 w-5 text-blue-600" />
@@ -1976,17 +2322,13 @@ function LiveCaptionWorkspace({
           </div>
 
           <div className="mt-5 space-y-2">
-            <button type="button" onClick={() => onUpdateOverlaySettings({ showOriginal: !overlaySettings.showOriginal })} className="flex h-10 w-full items-center justify-between rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-800 transition hover:bg-slate-50 active:scale-[0.99]">
-              原文
-              <span className={cn('h-5 w-9 rounded-full p-0.5 transition', overlaySettings.showOriginal ? 'bg-blue-500' : 'bg-slate-200')}><span className={cn('block h-4 w-4 rounded-full bg-white transition', overlaySettings.showOriginal && 'translate-x-4')} /></span>
-            </button>
-            <button type="button" onClick={() => onUpdateOverlaySettings({ compact: !overlaySettings.compact })} className="flex h-10 w-full items-center justify-between rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-800 transition hover:bg-slate-50 active:scale-[0.99]">
-              紧凑
-              <span className={cn('h-5 w-9 rounded-full p-0.5 transition', overlaySettings.compact ? 'bg-blue-500' : 'bg-slate-200')}><span className={cn('block h-4 w-4 rounded-full bg-white transition', overlaySettings.compact && 'translate-x-4')} /></span>
-            </button>
             <button type="button" onClick={() => onUpdateOverlaySettings({ scrollMode: !overlaySettings.scrollMode, visible: true })} className="flex h-10 w-full items-center justify-between rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-800 transition hover:bg-slate-50 active:scale-[0.99]">
               滚动模式
               <span className={cn('h-5 w-9 rounded-full p-0.5 transition', overlaySettings.scrollMode ? 'bg-blue-500' : 'bg-slate-200')}><span className={cn('block h-4 w-4 rounded-full bg-white transition', overlaySettings.scrollMode && 'translate-x-4')} /></span>
+            </button>
+            <button type="button" onClick={() => onUpdateOverlaySettings({ showOriginal: !overlaySettings.showOriginal })} className="flex h-10 w-full items-center justify-between rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-slate-800 transition hover:bg-slate-50 active:scale-[0.99]">
+              原文
+              <span className={cn('h-5 w-9 rounded-full p-0.5 transition', overlaySettings.showOriginal ? 'bg-blue-500' : 'bg-slate-200')}><span className={cn('block h-4 w-4 rounded-full bg-white transition', overlaySettings.showOriginal && 'translate-x-4')} /></span>
             </button>
           </div>
 
@@ -2021,7 +2363,7 @@ function LiveCaptionWorkspace({
           <label className="flex min-h-24 cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed border-slate-300 bg-slate-50 px-3 py-4 text-center transition hover:border-blue-300 hover:bg-blue-50/60">
             <Upload className="h-5 w-5 text-slate-500" />
             <span className="mt-2 text-sm font-black text-slate-900">上传翻译参考</span>
-            <span className="mt-1 text-xs leading-5 text-slate-500">txt / docx / pdf / xlsx · 2MB以内</span>
+            <span className="mt-1 text-xs leading-5 text-slate-500">txt / docx / pdf / xlsx · 5MB以内</span>
             <input
               type="file"
               accept=".txt,.docx,.pdf,.xlsx,text/plain,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -2052,6 +2394,8 @@ function LiveCaptionWorkspace({
           )}
         </section>
       </aside>
+
+      {renderCaptionSessionDialog()}
     </div>
   );
 }
@@ -2357,7 +2701,10 @@ export function DesktopApp() {
   const [activeView, setActiveView] = useState<DesktopView>('captions');
   const [overlaySettings, setOverlaySettings] = useState<CaptionOverlaySettings>(DEFAULT_OVERLAY_SETTINGS);
   const [streamState, setStreamState] = useState<CaptionStreamState>(DEFAULT_CAPTION_STATE);
+  const previousStreamStateRef = useRef<CaptionStreamState>(DEFAULT_CAPTION_STATE);
   const [captionLines, setCaptionLines] = useState<DesktopCaptionLine[]>([]);
+  const [captionSessionStartedAt, setCaptionSessionStartedAt] = useState('');
+  const [captionSessions, setCaptionSessions] = useState<DesktopCaptionSession[]>(() => readStoredValue(DESKTOP_CAPTION_SESSIONS_KEY, []));
   const [fallbackRunning, setFallbackRunning] = useState(false);
   const [translationPreferences, setTranslationPreferences] = useState<DesktopTranslationPreferences>(readDesktopPreferences);
   const [desktopTerms, setDesktopTerms] = useState<TermEntry[]>(() => readStoredValue(DESKTOP_TERMS_KEY, DEFAULT_TERMS));
@@ -2416,6 +2763,19 @@ export function DesktopApp() {
     writeStoredValue(DESKTOP_CUSTOM_SCENES_KEY, desktopCustomScenes);
   }, [desktopCustomScenes]);
 
+  useEffect(() => {
+    writeStoredValue(DESKTOP_CAPTION_SESSIONS_KEY, captionSessions);
+  }, [captionSessions]);
+
+  useEffect(() => {
+    const previousState = previousStreamStateRef.current;
+    if (previousState.running && !streamState.running) {
+      saveCaptionSessionFromLines(captionLines, previousState);
+      setCaptionSessionStartedAt('');
+    }
+    previousStreamStateRef.current = streamState;
+  }, [captionLines, streamState]);
+
   function updateOverlaySettings(settings: Partial<CaptionOverlaySettings>) {
     const api = window.knowlyDesktop;
     if (!api) {
@@ -2427,11 +2787,13 @@ export function DesktopApp() {
   }
 
   function startCaptionStream(options: StartCaptionStreamOptions) {
+    const startedAt = new Date().toISOString();
+    setCaptionSessionStartedAt(startedAt);
     setCaptionLines([]);
     const api = window.knowlyDesktop;
     if (!api) {
       setFallbackRunning(true);
-      setStreamState({ ...options, running: true, paused: false, lineCount: 0, startedAt: new Date().toISOString() });
+      setStreamState({ ...options, running: true, paused: false, lineCount: 0, startedAt });
       setOverlaySettings((current) => ({ ...current, visible: true }));
       return;
     }
@@ -2457,6 +2819,35 @@ export function DesktopApp() {
       return;
     }
     void api.resumeCaptionMockStream().then(setStreamState);
+  }
+
+  function saveCaptionSessionFromLines(lines: DesktopCaptionLine[], state: CaptionStreamState) {
+    if (lines.length === 0) return;
+
+    const turns = captionLinesToTurns(lines);
+    const summary = makeDesktopCaptionSummary(turns);
+    const endedAt = new Date().toISOString();
+    const startedAt = captionSessionStartedAt || state.startedAt || lines[0]?.receivedAt || endedAt;
+    const sourceDeviceLabel = AUDIO_DEVICES.find((device) => device.id === state.sourceDevice)?.label ?? state.sourceDevice;
+    const session: DesktopCaptionSession = {
+      id: `desktop-caption-session-${Date.now()}`,
+      title: summary.title,
+      startedAt,
+      endedAt,
+      sourceDevice: sourceDeviceLabel,
+      sourceLanguage: state.sourceLanguage,
+      targetLanguage: state.targetLanguage,
+      preferenceSummary: desktopCaptionSessionSummary(translationPreferences, state.sourceLanguage, state.targetLanguage),
+      lines,
+      turns,
+      summary,
+    };
+
+    setCaptionSessions((current) => [session, ...current].slice(0, 20));
+  }
+
+  function updateCaptionSession(session: DesktopCaptionSession) {
+    setCaptionSessions((current) => current.map((item) => (item.id === session.id ? session : item)));
   }
 
   function stopCaptionStream() {
@@ -2602,6 +2993,7 @@ export function DesktopApp() {
           streamState={streamState}
           overlaySettings={overlaySettings}
           preferences={translationPreferences}
+          captionSessions={captionSessions}
           onStart={startCaptionStream}
           onPause={pauseCaptionStream}
           onResume={resumeCaptionStream}
@@ -2609,6 +3001,7 @@ export function DesktopApp() {
           onShowOverlay={showOverlay}
           onHideOverlay={hideOverlay}
           onUpdateOverlaySettings={updateOverlaySettings}
+          onUpdateCaptionSession={updateCaptionSession}
           onOpenPreferences={() => setActiveView('preferences')}
         />
       ) : (

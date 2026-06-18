@@ -29,8 +29,7 @@ let overlaySettings: CaptionOverlaySettings = {
   fontScale: 1,
   showOriginal: true,
   showTranslation: true,
-  compact: false,
-  scrollMode: false,
+  scrollMode: true,
   visibleLineCount: 5,
   fullscreen: false,
 };
@@ -155,9 +154,10 @@ function resizeOverlayForMode() {
 }
 
 function createOverlayWindow() {
+  const initialBounds = defaultOverlayBounds();
   overlayWindow = new BrowserWindow({
-    width: OVERLAY_WIDTH,
-    height: OVERLAY_HEIGHT,
+    width: initialBounds.width,
+    height: initialBounds.height,
     minWidth: 360,
     minHeight: 220,
     frame: false,

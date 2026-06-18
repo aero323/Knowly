@@ -3,14 +3,20 @@ import { Captions, GripHorizontal, Maximize2, Minimize2, Pause, Play, Radio, Squ
 import { cn } from '@/lib/utils';
 import type { CaptionOverlaySettings, CaptionStreamState, DesktopCaptionLine } from '../shared/desktopApi';
 
+const OVERLAY_BASE_WIDTH = 430;
+const OVERLAY_BASE_HEIGHT = 270;
+const OVERLAY_SCROLL_MIN_HEIGHT = 430;
+const OVERLAY_SCROLL_LINE_HEIGHT = 18;
+const FULLSCREEN_BASE_WIDTH = 1280;
+const FULLSCREEN_BASE_HEIGHT = 720;
+
 const DEFAULT_OVERLAY_SETTINGS: CaptionOverlaySettings = {
   visible: false,
   opacity: 0.9,
   fontScale: 1,
   showOriginal: true,
   showTranslation: true,
-  compact: false,
-  scrollMode: false,
+  scrollMode: true,
   visibleLineCount: 5,
   fullscreen: false,
 };
@@ -23,6 +29,45 @@ const DEFAULT_CAPTION_STATE: CaptionStreamState = {
   sourceLanguage: 'auto',
   targetLanguage: 'zh',
 };
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function expectedOverlayHeight(settings: CaptionOverlaySettings) {
+  if (!settings.scrollMode) return OVERLAY_BASE_HEIGHT;
+  return OVERLAY_SCROLL_MIN_HEIGHT + (settings.visibleLineCount - 5) * OVERLAY_SCROLL_LINE_HEIGHT;
+}
+
+function fontSize(basePx: number, scale: number) {
+  return `${Math.round(basePx * scale * 10) / 10}px`;
+}
+
+function useWindowScale(settings: CaptionOverlaySettings) {
+  const [windowSize, setWindowSize] = useState(() => ({
+    width: window.innerWidth || OVERLAY_BASE_WIDTH,
+    height: window.innerHeight || expectedOverlayHeight(DEFAULT_OVERLAY_SETTINGS),
+  }));
+
+  useEffect(() => {
+    function syncWindowSize() {
+      setWindowSize({
+        width: window.innerWidth || OVERLAY_BASE_WIDTH,
+        height: window.innerHeight || expectedOverlayHeight(settings),
+      });
+    }
+
+    syncWindowSize();
+    window.addEventListener('resize', syncWindowSize);
+    return () => window.removeEventListener('resize', syncWindowSize);
+  }, [settings]);
+
+  const baseWidth = settings.fullscreen ? FULLSCREEN_BASE_WIDTH : OVERLAY_BASE_WIDTH;
+  const baseHeight = settings.fullscreen ? FULLSCREEN_BASE_HEIGHT : expectedOverlayHeight(settings);
+  const sizeScale = Math.sqrt((windowSize.width * windowSize.height) / (baseWidth * baseHeight));
+
+  return settings.fontScale * clamp(sizeScale, settings.fullscreen ? 0.9 : 0.75, settings.fullscreen ? 1.35 : 2.1);
+}
 
 function OverlayButton({ label, children, onClick }: { label: string; children: ReactNode; onClick: () => void }) {
   return (
@@ -38,33 +83,39 @@ function OverlayButton({ label, children, onClick }: { label: string; children: 
   );
 }
 
-function EmptyCaption({ compact }: { compact: boolean }) {
+function EmptyCaption({ textScale }: { textScale: number }) {
   return (
-    <div className={cn('flex min-h-0 flex-1 flex-col items-center justify-center text-center', compact ? 'px-4' : 'px-6')}>
+    <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-6 text-center">
       <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-lg bg-white/10 text-emerald-300">
         <Captions className="h-6 w-6" />
       </div>
-      <p className="text-base font-black text-white">等待字幕</p>
-      <p className="mt-1 text-xs leading-relaxed text-white/52">从主窗口开始字幕同传后，这里会持续显示翻译结果。</p>
+      <p className="font-black text-white" style={{ fontSize: fontSize(16, textScale) }}>等待字幕</p>
+      <p className="mt-1 leading-relaxed text-white/52" style={{ fontSize: fontSize(12, textScale) }}>从主窗口开始字幕同传后，这里会持续显示翻译结果。</p>
     </div>
   );
 }
 
-function CaptionDisplay({ line, settings }: { line: DesktopCaptionLine; settings: CaptionOverlaySettings }) {
+function CaptionDisplay({ line, settings, textScale }: { line: DesktopCaptionLine; settings: CaptionOverlaySettings; textScale: number }) {
   return (
     <div
       className={cn(
         'flex min-h-0 flex-1 flex-col justify-center overflow-hidden',
-        settings.fullscreen ? 'px-[8vw] pb-[10vh]' : settings.compact ? 'px-4 pb-3' : 'px-5 pb-4',
+        settings.fullscreen ? 'px-[8vw] pb-[10vh]' : 'px-5 pb-4',
       )}
     >
       {settings.showTranslation && (
-        <p className={cn('font-black leading-snug text-white', settings.fullscreen ? 'text-6xl' : settings.compact ? 'text-lg' : 'text-xl')}>
+        <p
+          className="font-black leading-snug text-white"
+          style={{ fontSize: fontSize(settings.fullscreen ? 60 : 20, textScale) }}
+        >
           {line.translatedText}
         </p>
       )}
       {settings.showOriginal && (
-        <p className={cn('leading-relaxed text-white/58', settings.fullscreen ? 'mt-6 text-3xl' : settings.compact ? 'mt-2 text-xs' : 'mt-2 text-sm')}>
+        <p
+          className={cn('leading-relaxed text-white/58', settings.fullscreen ? 'mt-6' : 'mt-2')}
+          style={{ fontSize: fontSize(settings.fullscreen ? 30 : 14, textScale) }}
+        >
           {line.originalText}
         </p>
       )}
@@ -72,11 +123,11 @@ function CaptionDisplay({ line, settings }: { line: DesktopCaptionLine; settings
   );
 }
 
-function ScrollingCaptionDisplay({ lines, settings }: { lines: DesktopCaptionLine[]; settings: CaptionOverlaySettings }) {
+function ScrollingCaptionDisplay({ lines, settings, textScale }: { lines: DesktopCaptionLine[]; settings: CaptionOverlaySettings; textScale: number }) {
   const visibleLines = lines.slice(-settings.visibleLineCount);
 
   return (
-    <div className={cn('min-h-0 flex-1 overflow-hidden', settings.fullscreen ? 'px-[7vw] pb-[7vh]' : settings.compact ? 'px-4 pb-3' : 'px-5 pb-4')}>
+    <div className={cn('min-h-0 flex-1 overflow-hidden', settings.fullscreen ? 'px-[7vw] pb-[18vh]' : 'px-5 pb-4')}>
       <div className={cn('flex h-full flex-col justify-end', settings.fullscreen ? 'gap-5' : 'gap-2.5')}>
         {visibleLines.map((line, index) => {
           const active = index === visibleLines.length - 1;
@@ -95,10 +146,9 @@ function ScrollingCaptionDisplay({ lines, settings }: { lines: DesktopCaptionLin
                 <p
                   className={cn(
                     'font-black leading-snug',
-                    settings.fullscreen
-                      ? active ? 'text-5xl text-white' : 'text-3xl text-white/76'
-                      : active ? 'text-base text-white' : 'text-sm text-white/76',
+                    active ? 'text-white' : 'text-white/76',
                   )}
+                  style={{ fontSize: fontSize(settings.fullscreen ? active ? 48 : 30 : active ? 16 : 14, textScale) }}
                 >
                   {line.translatedText}
                 </p>
@@ -107,10 +157,9 @@ function ScrollingCaptionDisplay({ lines, settings }: { lines: DesktopCaptionLin
                 <p
                   className={cn(
                     'leading-relaxed',
-                    settings.fullscreen
-                      ? active ? 'mt-3 text-2xl text-white/62' : 'mt-2 text-xl text-white/42'
-                      : active ? 'mt-1 text-xs text-white/62' : 'mt-1 text-[11px] text-white/42',
+                    settings.fullscreen ? active ? 'mt-3 text-white/62' : 'mt-2 text-white/42' : active ? 'mt-1 text-white/62' : 'mt-1 text-white/42',
                   )}
+                  style={{ fontSize: fontSize(settings.fullscreen ? active ? 24 : 20 : active ? 12 : 11, textScale) }}
                 >
                   {line.originalText}
                 </p>
@@ -128,6 +177,7 @@ export function CaptionOverlayApp() {
   const [streamState, setStreamState] = useState<CaptionStreamState>(DEFAULT_CAPTION_STATE);
   const [lines, setLines] = useState<DesktopCaptionLine[]>([]);
   const activeLine = lines[lines.length - 1];
+  const textScale = useWindowScale(settings);
 
   useEffect(() => {
     const api = window.knowlyDesktop;
@@ -184,12 +234,12 @@ export function CaptionOverlayApp() {
           'knowly-drag flex h-full w-full flex-col overflow-hidden border border-white/10 bg-slate-950/92 text-white shadow-2xl shadow-black/35 backdrop-blur-xl',
           settings.fullscreen ? 'rounded-none' : 'rounded-lg',
         )}
-        style={{ opacity: settings.opacity, fontSize: `${settings.fontScale}rem` }}
+        style={{ opacity: settings.opacity }}
       >
         <header
           className={cn(
             'flex shrink-0 items-center justify-between gap-3 border-b border-white/8',
-            settings.fullscreen ? 'h-[72px] px-8 py-4' : settings.compact ? 'h-11 px-3' : 'h-[52px] px-4 py-3',
+            settings.fullscreen ? 'h-[72px] px-8 py-4' : 'h-[52px] px-4 py-3',
           )}
         >
           <div className="flex min-w-0 items-center gap-2">
@@ -198,8 +248,8 @@ export function CaptionOverlayApp() {
               <Radio className={cn(settings.fullscreen ? 'h-5 w-5' : 'h-4 w-4')} />
             </div>
             <div className="min-w-0">
-              <p className={cn('truncate font-black text-white', settings.fullscreen ? 'text-base' : 'text-xs')}>Knowly 字幕</p>
-              {stateLabel && <p className={cn('truncate font-semibold text-white/45', settings.fullscreen ? 'text-sm' : 'text-[11px]')}>{stateLabel}</p>}
+              <p className="truncate font-black text-white" style={{ fontSize: fontSize(settings.fullscreen ? 16 : 12, textScale) }}>Knowly 字幕</p>
+              {stateLabel && <p className="truncate font-semibold text-white/45" style={{ fontSize: fontSize(settings.fullscreen ? 14 : 11, textScale) }}>{stateLabel}</p>}
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
@@ -217,10 +267,10 @@ export function CaptionOverlayApp() {
 
         {activeLine ? (
           settings.scrollMode
-            ? <ScrollingCaptionDisplay lines={lines} settings={settings} />
-            : <CaptionDisplay line={activeLine} settings={settings} />
+            ? <ScrollingCaptionDisplay lines={lines} settings={settings} textScale={textScale} />
+            : <CaptionDisplay line={activeLine} settings={settings} textScale={textScale} />
         ) : (
-          <EmptyCaption compact={settings.compact} />
+          <EmptyCaption textScale={textScale} />
         )}
       </section>
     </div>
