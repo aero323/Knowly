@@ -22,10 +22,12 @@ import {
   Link2,
   Loader2,
   LogIn,
+  LogOut,
   Maximize2,
   MessageSquareText,
   Mic,
   MicOff,
+  Minus,
   PanelRight,
   Pause,
   Pencil,
@@ -62,6 +64,13 @@ import type {
   DesktopTargetLanguage,
   StartCaptionStreamOptions,
 } from '../shared/desktopApi';
+import {
+  DESKTOP_TARGET_LANGUAGE_OPTIONS,
+  activeDesktopTargetLanguages,
+  buildDesktopCaptionTranslations,
+  desktopTargetLanguageLabel,
+  normalizeDesktopTargetLanguages,
+} from '../shared/desktopApi';
 
 type DesktopView = 'call' | 'captions' | 'preferences';
 type DesktopCallStage = 'home' | 'lobby' | 'room' | 'ended';
@@ -69,10 +78,12 @@ type DesktopCallMode = 'voice' | 'video' | 'join' | 'contact';
 type DesktopCaptionMode = 'both' | 'source' | 'target';
 type DesktopTranslationFormality = 'plain' | 'business' | 'formal';
 type DesktopSubtitleSize = 'compact' | 'standard' | 'large';
+type DesktopAccountPlan = 'free' | 'enterprise';
 
 interface DesktopTranslationPreferences {
   sourceLanguage: DesktopSourceLanguage;
   targetLanguage: DesktopTargetLanguage;
+  targetLanguages: DesktopTargetLanguage[];
   translationFormality: DesktopTranslationFormality;
   subtitleSize: DesktopSubtitleSize;
   showOriginalText: boolean;
@@ -85,6 +96,15 @@ interface DesktopCustomScene {
   id: string;
   name: string;
   prompt: string;
+}
+
+interface DesktopMockUser {
+  id: string;
+  phone: string;
+  name: string;
+  company: string;
+  plan: DesktopAccountPlan;
+  createdAt: string;
 }
 
 interface ReferenceFileState {
@@ -102,6 +122,7 @@ interface DesktopCaptionSession {
   sourceDevice: string;
   sourceLanguage: DesktopSourceLanguage;
   targetLanguage: DesktopTargetLanguage;
+  targetLanguages: DesktopTargetLanguage[];
   preferenceSummary: string;
   lines: DesktopCaptionLine[];
   turns: ConversationTurn[];
@@ -273,9 +294,11 @@ const DEFAULT_OVERLAY_SETTINGS: CaptionOverlaySettings = {
   showOriginal: true,
   showTranslation: true,
   scrollMode: true,
-  visibleLineCount: 5,
+  visibleLineCount: 3,
   fullscreen: false,
 };
+
+const MULTILINGUAL_CAPTION_DEMO_LANGUAGES: DesktopTargetLanguage[] = ['zh', 'en', 'th'];
 
 const DEFAULT_CAPTION_STATE: CaptionStreamState = {
   running: false,
@@ -284,19 +307,25 @@ const DEFAULT_CAPTION_STATE: CaptionStreamState = {
   sourceDevice: 'system-mix',
   sourceLanguage: 'auto',
   targetLanguage: 'zh',
+  targetLanguages: ['zh'],
 };
+
+const DEFAULT_DESKTOP_TARGET_LANGUAGES: DesktopTargetLanguage[] = ['id'];
 
 const DESKTOP_PREFERENCES_KEY = 'knowly.desktop.translationPreferences.v1';
 const DESKTOP_TERMS_KEY = 'knowly.desktop.terms.v1';
 const DESKTOP_CUSTOM_SCENES_KEY = 'knowly.desktop.customScenes.v1';
 const DESKTOP_CAPTION_SESSIONS_KEY = 'knowly.desktop.captionSessions.v1';
+const DESKTOP_AUTH_USER_KEY = 'knowly.desktop.mockUser.v1';
 const REFERENCE_FILE_LIMIT_BYTES = 5 * 1024 * 1024;
 const REFERENCE_FILE_EXTENSIONS = ['txt', 'docx', 'pdf', 'xlsx'] as const;
 const DEFAULT_CUSTOM_SCENE_PROMPT = '请根据当前业务场景调整翻译：优先保留关键专有名词、金额、时间、单据名称和责任方；语气保持清楚、礼貌、可直接用于商务沟通。';
+const MOCK_SMS_CODE = '2026';
 
 const DEFAULT_TRANSLATION_PREFERENCES: DesktopTranslationPreferences = {
   sourceLanguage: 'auto',
   targetLanguage: 'id',
+  targetLanguages: DEFAULT_DESKTOP_TARGET_LANGUAGES,
   translationFormality: 'business',
   subtitleSize: 'standard',
   showOriginalText: true,
@@ -318,11 +347,7 @@ const SOURCE_LANGUAGES: Array<{ value: DesktopSourceLanguage; label: string }> =
   { value: 'en', label: '英语' },
 ];
 
-const TARGET_LANGUAGES: Array<{ value: DesktopTargetLanguage; label: string }> = [
-  { value: 'zh', label: '中文' },
-  { value: 'id', label: '印尼语' },
-  { value: 'en', label: '英语' },
-];
+const TARGET_LANGUAGES = DESKTOP_TARGET_LANGUAGE_OPTIONS;
 
 const FORMALITY_OPTIONS: Array<{ value: DesktopTranslationFormality; label: string; description: string }> = [
   { value: 'plain', label: '自然直译', description: '保留口语感' },
@@ -336,29 +361,88 @@ const SUBTITLE_SIZE_OPTIONS: Array<{ value: DesktopSubtitleSize; label: string }
   { value: 'large', label: '大字' },
 ];
 
-const CURRENT_DESKTOP_PLAN_LABEL = '企业版';
+function desktopPlanLabel(plan: DesktopAccountPlan) {
+  return plan === 'enterprise' ? '企业版' : '未付费';
+}
+
+function desktopPlanBadgeClass(plan: DesktopAccountPlan) {
+  return plan === 'enterprise'
+    ? 'bg-blue-50 text-blue-700'
+    : 'bg-amber-50 text-amber-700';
+}
+
+function maskPhoneNumber(phone: string) {
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length < 8) return phone;
+  return `${digits.slice(0, 3)}****${digits.slice(-4)}`;
+}
+
+function makeDesktopMockUser(plan: DesktopAccountPlan, phone: string): DesktopMockUser {
+  const normalizedPhone = phone.replace(/\D/g, '');
+  return {
+    id: `desktop-mock-${plan}-${normalizedPhone || Date.now()}`,
+    phone: normalizedPhone || phone,
+    name: plan === 'enterprise' ? '企业管理员' : '未付费用户',
+    company: plan === 'enterprise' ? 'Knowly 企业测试账号' : '待开通企业账号',
+    plan,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+function readDesktopMockUser() {
+  const stored = readStoredValue<Partial<DesktopMockUser> | null>(DESKTOP_AUTH_USER_KEY, null);
+  if (!stored?.phone) return null;
+  return {
+    id: stored.id ?? `desktop-mock-${stored.phone}`,
+    phone: stored.phone,
+    name: stored.name ?? '未付费用户',
+    company: stored.company ?? '待开通企业账号',
+    plan: stored.plan === 'enterprise' ? 'enterprise' : 'free',
+    createdAt: stored.createdAt ?? new Date().toISOString(),
+  } satisfies DesktopMockUser;
+}
 
 function desktopPreferenceSummary(preferences: DesktopTranslationPreferences) {
   const source = SOURCE_LANGUAGES.find((item) => item.value === preferences.sourceLanguage)?.label ?? preferences.sourceLanguage;
-  const target = TARGET_LANGUAGES.find((item) => item.value === preferences.targetLanguage)?.label ?? preferences.targetLanguage;
+  const target = desktopTargetLanguageSummary(preferences.targetLanguages, preferences.targetLanguage);
   const formality = FORMALITY_OPTIONS.find((item) => item.value === preferences.translationFormality)?.label ?? preferences.translationFormality;
   return `${source} → ${target} · ${formality}${preferences.useTermsLibrary ? ' · 使用术语库' : ''}`;
+}
+
+function desktopTargetLanguageSummary(targetLanguages: DesktopTargetLanguage[] | undefined, fallback: DesktopTargetLanguage) {
+  const activeLanguages = activeDesktopTargetLanguages(targetLanguages, fallback);
+  if (activeLanguages.length === 0) return '无译文';
+  return activeLanguages.map(desktopTargetLanguageLabel).join(' / ');
+}
+
+function captionTranslationTrackLabel(label: string, index: number, total: number) {
+  return total > 1 ? `译文 ${index + 1} · ${label}` : `译文 · ${label}`;
+}
+
+function captionSourceLanguageLabel(language: DesktopCaptionLine['sourceLanguage']) {
+  if (language === 'zh') return '中文';
+  if (language === 'id') return '印尼语';
+  return '原语言';
+}
+
+function isDesktopTargetLanguage(value: unknown): value is DesktopTargetLanguage {
+  return TARGET_LANGUAGES.some((item) => item.value === value);
 }
 
 function desktopCaptionSessionSummary(
   preferences: DesktopTranslationPreferences,
   sourceLanguage: DesktopSourceLanguage,
-  targetLanguage: DesktopTargetLanguage,
+  targetLanguages: DesktopTargetLanguage[],
 ) {
   const source = SOURCE_LANGUAGES.find((item) => item.value === sourceLanguage)?.label ?? sourceLanguage;
-  const target = TARGET_LANGUAGES.find((item) => item.value === targetLanguage)?.label ?? targetLanguage;
+  const target = desktopTargetLanguageSummary(targetLanguages, preferences.targetLanguage);
   const formality = FORMALITY_OPTIONS.find((item) => item.value === preferences.translationFormality)?.label ?? preferences.translationFormality;
   return `${source} → ${target} · ${formality}${preferences.useTermsLibrary ? ' · 使用术语库' : ''}`;
 }
 
-function desktopCaptionTemporarySummary(sourceLanguage: DesktopSourceLanguage, targetLanguage: DesktopTargetLanguage) {
+function desktopCaptionTemporarySummary(sourceLanguage: DesktopSourceLanguage, targetLanguages: DesktopTargetLanguage[]) {
   const source = SOURCE_LANGUAGES.find((item) => item.value === sourceLanguage)?.label ?? sourceLanguage;
-  const target = TARGET_LANGUAGES.find((item) => item.value === targetLanguage)?.label ?? targetLanguage;
+  const target = desktopTargetLanguageSummary(targetLanguages, 'zh');
   return `临时设置 · ${source} → ${target}`;
 }
 
@@ -368,14 +452,28 @@ function subtitleSizeToOverlayDefaults(size: DesktopSubtitleSize): Pick<CaptionO
   return { fontScale: 1 };
 }
 
+function primaryCaptionTranslationText(line: DesktopCaptionLine) {
+  return line.translations?.[0]?.translatedText ?? line.translatedText;
+}
+
+function withDesktopCaptionTranslations(line: DesktopCaptionLine, targetLanguages: DesktopTargetLanguage[] | undefined): DesktopCaptionLine {
+  const translations = buildDesktopCaptionTranslations(line.originalText, line.translatedText, targetLanguages);
+  return {
+    ...line,
+    targetLanguage: translations[0]?.targetLanguage ?? 'none',
+    translatedText: translations[0]?.translatedText ?? '',
+    translations,
+  };
+}
+
 function captionLinesToTurns(lines: DesktopCaptionLine[]): ConversationTurn[] {
   return lines.map((line) => ({
     id: `desktop-caption-turn-${line.id}`,
     speaker: line.speakerId === 'speaker-1' ? 'me' : 'counterpart',
     sourceLanguage: line.sourceLanguage,
-    targetLanguage: line.targetLanguage,
+    targetLanguage: line.targetLanguage === 'id' ? 'id' : 'zh',
     sourceText: line.originalText,
-    translatedText: line.translatedText,
+    translatedText: primaryCaptionTranslationText(line),
     terms: line.keywords,
   }));
 }
@@ -461,6 +559,14 @@ function readDesktopPreferences() {
 
   const validSource = SOURCE_LANGUAGES.some((item) => item.value === stored.sourceLanguage);
   const validTarget = TARGET_LANGUAGES.some((item) => item.value === stored.targetLanguage);
+  const storedTargetLanguage = validTarget ? stored.targetLanguage! : DEFAULT_TRANSLATION_PREFERENCES.targetLanguage;
+  const storedTargetLanguages = Array.isArray(stored.targetLanguages)
+    ? stored.targetLanguages.filter(isDesktopTargetLanguage).slice(0, 3)
+    : [];
+  const targetLanguages = normalizeDesktopTargetLanguages(
+    storedTargetLanguages.length ? storedTargetLanguages : [storedTargetLanguage],
+    storedTargetLanguage,
+  );
   const validFormality = FORMALITY_OPTIONS.some((item) => item.value === stored.translationFormality);
   const validSubtitleSize = SUBTITLE_SIZE_OPTIONS.some((item) => item.value === stored.subtitleSize);
   const validScene = SCENES.some((item) => item.id === stored.activeSceneId) || stored.activeSceneId?.startsWith('desktop-custom-scene-');
@@ -469,10 +575,20 @@ function readDesktopPreferences() {
     ...DEFAULT_TRANSLATION_PREFERENCES,
     ...stored,
     sourceLanguage: validSource ? stored.sourceLanguage! : DEFAULT_TRANSLATION_PREFERENCES.sourceLanguage,
-    targetLanguage: validTarget ? stored.targetLanguage! : DEFAULT_TRANSLATION_PREFERENCES.targetLanguage,
+    targetLanguage: activeDesktopTargetLanguages(targetLanguages, storedTargetLanguage)[0] ?? storedTargetLanguage,
+    targetLanguages,
     translationFormality: validFormality ? stored.translationFormality! : DEFAULT_TRANSLATION_PREFERENCES.translationFormality,
     subtitleSize: validSubtitleSize ? stored.subtitleSize! : DEFAULT_TRANSLATION_PREFERENCES.subtitleSize,
     activeSceneId: validScene ? stored.activeSceneId! : DEFAULT_TRANSLATION_PREFERENCES.activeSceneId,
+  };
+}
+
+function applyMultilingualCaptionDemoPreferences(preferences: DesktopTranslationPreferences): DesktopTranslationPreferences {
+  return {
+    ...preferences,
+    targetLanguage: MULTILINGUAL_CAPTION_DEMO_LANGUAGES[0],
+    targetLanguages: MULTILINGUAL_CAPTION_DEMO_LANGUAGES,
+    showOriginalText: true,
   };
 }
 
@@ -511,14 +627,14 @@ function getContactMeta(contact: (typeof CONTACTS)[number]) {
   return `ID ${contact.contactCode} · ${contact.lastCall}`;
 }
 
-function makeFallbackCaptionLine(index: number): DesktopCaptionLine {
+function makeFallbackCaptionLine(index: number, targetLanguages: DesktopTargetLanguage[] = ['zh']): DesktopCaptionLine {
   const caption = SIMULTANEOUS_CAPTIONS[index % SIMULTANEOUS_CAPTIONS.length];
-  return {
+  return withDesktopCaptionTranslations({
     ...caption,
     id: `browser-fallback-caption-${Date.now()}-${index}`,
     sequence: index + 1,
     receivedAt: new Date().toISOString(),
-  };
+  }, targetLanguages);
 }
 
 function IconButton({
@@ -574,11 +690,195 @@ function StatusPill({ running, paused }: { running: boolean; paused: boolean }) 
   );
 }
 
-function Sidebar({ activeView, onChange }: { activeView: DesktopView; onChange: (view: DesktopView) => void }) {
+function DeveloperNoteBadge({ note }: { note: string }) {
+  return (
+    <span
+      tabIndex={0}
+      role="note"
+      aria-label={note}
+      aria-describedby="ai-call-dev-note"
+      className="group absolute right-1.5 top-1.5 z-20 flex h-5 min-w-5 cursor-help items-center justify-center rounded-full bg-amber-400 px-1 text-[10px] font-black leading-none text-slate-950 shadow-sm outline-none ring-1 ring-amber-500/30 focus:ring-2 focus:ring-amber-300"
+    >
+      注
+      <span
+        id="ai-call-dev-note"
+        className="pointer-events-none absolute right-0 top-full z-[9999] mt-1 w-max max-w-44 rounded-lg bg-slate-950 px-3 py-2 text-xs font-bold leading-5 text-white opacity-0 shadow-xl transition group-hover:opacity-100 group-focus:opacity-100"
+      >
+        {note}
+      </span>
+    </span>
+  );
+}
+
+function DesktopLoginScreen({ onLogin }: { onLogin: (user: DesktopMockUser) => void }) {
+  const [phone, setPhone] = useState('');
+  const [smsCode, setSmsCode] = useState('');
+  const [codeSent, setCodeSent] = useState(false);
+  const [smsError, setSmsError] = useState('');
+  const normalizedPhone = phone.replace(/\D/g, '');
+  const phoneReady = normalizedPhone.length >= 11;
+  const canSubmit = phoneReady && smsCode.trim().length >= 4;
+
+  function sendSmsCode() {
+    if (!phoneReady) {
+      setSmsError('请输入 11 位手机号码');
+      return;
+    }
+    setCodeSent(true);
+    setSmsCode(MOCK_SMS_CODE);
+    setSmsError('');
+  }
+
+  function submitLogin() {
+    if (!canSubmit) {
+      setSmsError('请输入手机号码和短信验证码');
+      return;
+	    }
+	    if (smsCode.trim() !== MOCK_SMS_CODE) {
+	      setSmsError(`演示验证码为 ${MOCK_SMS_CODE}`);
+	      return;
+	    }
+    onLogin(makeDesktopMockUser('free', normalizedPhone));
+  }
+
+  return (
+    <main className="flex h-full min-h-0 items-center justify-center overflow-y-auto bg-[#eef2f7] px-6 py-8">
+      <section className="grid w-full max-w-5xl grid-cols-[minmax(0,0.9fr)_minmax(360px,420px)] overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xl shadow-slate-200/70">
+        <div className="flex min-h-[620px] flex-col justify-between bg-slate-950 p-10 text-white">
+          <div>
+            <div className="flex items-center gap-3">
+              <img src={knowlyLogoUrl} alt="Knowly" className="h-12 w-12 rounded-lg bg-white object-contain p-1" />
+	              <div>
+	                <p className="text-base font-black">懂译Knowly</p>
+	                <p className="mt-0.5 text-xs font-semibold text-white/55">桌面端实时字幕同传</p>
+	              </div>
+	            </div>
+
+	            <div className="mt-16 max-w-xl">
+	              <p className="text-sm font-bold text-blue-200">Knowly Desktop</p>
+	              <h1 className="mt-4 text-4xl font-black leading-tight">登录后开始桌面端字幕同传</h1>
+	              <p className="mt-5 text-base font-semibold leading-7 text-white/68">
+	                在会议、网页通话和本地音频中实时生成字幕，并同步展示多语译文。企业账号可开启完整同传能力，让跨语言沟通保持清楚、连贯。
+	              </p>
+	            </div>
+	          </div>
+
+	          <div className="grid grid-cols-3 gap-3 text-xs font-semibold text-white/70">
+	            {['实时字幕', '多语译文', '企业协作'].map((item) => (
+	              <div key={item} className="rounded-lg border border-white/10 bg-white/6 px-3 py-3">
+	                <CheckCircle2 className="mb-2 h-4 w-4 text-emerald-300" />
+	                {item}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="flex flex-col justify-center p-8">
+	          <div>
+	            <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">Sign in</p>
+	            <h2 className="mt-3 text-2xl font-black text-slate-950">手机号注册 / 登录</h2>
+	            <p className="mt-2 text-sm leading-6 text-slate-500">使用手机号接收验证码，登录后进入桌面端字幕同传工作台。</p>
+	          </div>
+
+          <div className="mt-8 space-y-4">
+            <label className="block">
+              <span className="mb-2 block text-xs font-bold text-slate-500">手机号码</span>
+              <div className="flex h-12 items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 focus-within:border-blue-300 focus-within:bg-white focus-within:ring-2 focus-within:ring-blue-100">
+                <Smartphone className="h-4 w-4 shrink-0 text-slate-400" />
+                <input
+                  value={phone}
+                  onChange={(event) => {
+                    setPhone(event.target.value.replace(/[^\d\s-]/g, ''));
+                    setSmsError('');
+                  }}
+                  placeholder="138 0000 0000"
+                  inputMode="tel"
+                  className="min-w-0 flex-1 bg-transparent text-sm font-bold text-slate-950 outline-none placeholder:text-slate-400"
+                />
+              </div>
+            </label>
+
+            <label className="block">
+              <span className="mb-2 block text-xs font-bold text-slate-500">短信验证码</span>
+              <div className="flex gap-2">
+                <input
+                  value={smsCode}
+                  onChange={(event) => {
+                    setSmsCode(event.target.value.replace(/\D/g, '').slice(0, 6));
+                    setSmsError('');
+                  }}
+                  placeholder="2026"
+                  inputMode="numeric"
+                  className="h-12 min-w-0 flex-1 rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm font-bold tracking-widest text-slate-950 outline-none placeholder:tracking-normal placeholder:text-slate-400 focus:border-blue-300 focus:bg-white focus:ring-2 focus:ring-blue-100"
+                />
+                <button
+                  type="button"
+                  onClick={sendSmsCode}
+                  className="h-12 shrink-0 rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-blue-700 transition hover:border-blue-200 hover:bg-blue-50 active:scale-[0.98]"
+                >
+                  {codeSent ? '重新获取' : '获取验证码'}
+                </button>
+              </div>
+            </label>
+
+            {smsError && (
+              <p className="rounded-lg bg-red-50 px-3 py-2 text-xs font-semibold leading-5 text-red-700">{smsError}</p>
+            )}
+	            {codeSent && !smsError && (
+	              <p className="rounded-lg bg-blue-50 px-3 py-2 text-xs font-semibold leading-5 text-blue-700">验证码已发送，本次演示验证码为 {MOCK_SMS_CODE}</p>
+	            )}
+
+            <button
+              type="button"
+              onClick={submitLogin}
+              disabled={!canSubmit}
+              className="flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-slate-950 text-sm font-black text-white transition hover:bg-slate-800 active:scale-[0.99] disabled:bg-slate-200 disabled:text-slate-400"
+            >
+              <LogIn className="h-4 w-4" />
+              登录 / 注册
+            </button>
+          </div>
+
+	          <div className="mt-8 border-t border-slate-100 pt-5">
+	            <p className="text-center text-xs font-bold text-slate-400">体验入口</p>
+            <div className="mt-3 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+	                onClick={() => onLogin(makeDesktopMockUser('free', '13800000001'))}
+	                className="h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs font-bold text-slate-600 transition hover:bg-slate-50 active:scale-[0.98]"
+	              >
+	                个人体验
+              </button>
+              <button
+                type="button"
+	                onClick={() => onLogin(makeDesktopMockUser('enterprise', '13800000002'))}
+	                className="h-9 rounded-lg border border-blue-100 bg-blue-50 px-2 text-xs font-bold text-blue-700 transition hover:bg-blue-100 active:scale-[0.98]"
+	              >
+	                企业体验
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function Sidebar({
+  activeView,
+  currentUser,
+  onChange,
+  onLogout,
+}: {
+  activeView: DesktopView;
+  currentUser: DesktopMockUser;
+  onChange: (view: DesktopView) => void;
+  onLogout: () => void;
+}) {
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const navItems = [
-    { id: 'call' as const, label: 'AI 通话', icon: Phone },
     { id: 'captions' as const, label: '字幕同传', icon: Captions },
+    { id: 'call' as const, label: 'AI 通话', icon: Phone, note: '研发注释：一期不做' },
     { id: 'preferences' as const, label: '翻译偏好', icon: Settings2 },
   ];
 
@@ -597,18 +897,21 @@ function Sidebar({ activeView, onChange }: { activeView: DesktopView; onChange: 
           const Icon = item.icon;
           const isActive = activeView === item.id;
           return (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => onChange(item.id)}
-              className={cn(
-                'flex h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm font-semibold transition',
-                isActive ? 'bg-slate-950 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-950',
-              )}
-            >
-              <Icon className="h-5 w-5" />
-              <span>{item.label}</span>
-            </button>
+            <div key={item.id} className="relative">
+              <button
+                type="button"
+                onClick={() => onChange(item.id)}
+                className={cn(
+                  'flex h-12 w-full items-center gap-3 rounded-lg px-3 text-left text-sm font-semibold transition',
+                  item.note ? 'pr-8' : '',
+                  isActive ? 'bg-slate-950 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-950',
+                )}
+              >
+                <Icon className="h-5 w-5" />
+                <span>{item.label}</span>
+              </button>
+              {item.note && <DeveloperNoteBadge note={item.note} />}
+            </div>
           );
         })}
       </nav>
@@ -617,13 +920,17 @@ function Sidebar({ activeView, onChange }: { activeView: DesktopView; onChange: 
         <div className="relative">
           {accountMenuOpen && (
             <div className="absolute bottom-full left-0 right-0 z-50 mb-2 rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl shadow-slate-900/12">
-              <button type="button" className="flex h-10 w-full items-center gap-2 rounded-md px-2.5 text-left text-xs font-bold text-slate-800 transition hover:bg-slate-50">
-                <LogIn className="h-4 w-4 text-slate-600" />
-                登录/注册
+              <button type="button" onClick={() => setAccountMenuOpen(false)} className="flex h-10 w-full items-center gap-2 rounded-md px-2.5 text-left text-xs font-bold text-slate-800 transition hover:bg-slate-50">
+                <UserRound className="h-4 w-4 text-slate-600" />
+                {maskPhoneNumber(currentUser.phone)}
               </button>
               <button type="button" className="flex h-10 w-full items-center gap-2 rounded-md px-2.5 text-left text-xs font-bold text-slate-800 transition hover:bg-slate-50">
                 <Handshake className="h-4 w-4 text-emerald-600" />
                 联系销售
+              </button>
+              <button type="button" onClick={onLogout} className="flex h-10 w-full items-center gap-2 rounded-md px-2.5 text-left text-xs font-bold text-slate-800 transition hover:bg-slate-50">
+                <LogOut className="h-4 w-4 text-slate-600" />
+                退出登录
               </button>
               <button type="button" className="flex h-10 w-full items-center gap-2 rounded-md px-2.5 text-left text-xs font-bold text-slate-800 transition hover:bg-slate-50">
                 <CircleHelp className="h-4 w-4 text-blue-600" />
@@ -644,10 +951,10 @@ function Sidebar({ activeView, onChange }: { activeView: DesktopView; onChange: 
                 <UserRound className="h-4 w-4" />
               </span>
               <span className="min-w-0">
-                <span className="block text-sm font-black text-slate-950">我的</span>
-                <span className="mt-1 inline-flex max-w-full items-center gap-1.5 rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-bold text-blue-700">
+                <span className="block truncate text-sm font-black text-slate-950">{currentUser.name}</span>
+                <span className={cn('mt-1 inline-flex max-w-full items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-bold', desktopPlanBadgeClass(currentUser.plan))}>
                   <Crown className="h-3 w-3 shrink-0" />
-                  <span className="truncate">{CURRENT_DESKTOP_PLAN_LABEL}</span>
+                  <span className="truncate">{desktopPlanLabel(currentUser.plan)}</span>
                 </span>
               </span>
             </span>
@@ -662,11 +969,15 @@ function Sidebar({ activeView, onChange }: { activeView: DesktopView; onChange: 
 
 function DesktopShell({
   activeView,
+  currentUser,
   onChangeView,
+  onLogout,
   children,
 }: {
   activeView: DesktopView;
+  currentUser: DesktopMockUser;
   onChangeView: (view: DesktopView) => void;
+  onLogout: () => void;
   children: ReactNode;
 }) {
   const title = activeView === 'call' ? 'AI 通话' : activeView === 'captions' ? 'PC 字幕同声传译' : '翻译偏好';
@@ -680,7 +991,7 @@ function DesktopShell({
 
   return (
     <div className="flex h-full min-h-0 bg-[#eef2f7]">
-      <Sidebar activeView={activeView} onChange={onChangeView} />
+      <Sidebar activeView={activeView} currentUser={currentUser} onChange={onChangeView} onLogout={onLogout} />
       <main className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-16 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-6">
           <div className="min-w-0">
@@ -1208,7 +1519,7 @@ function AiCallWorkspace({
               </div>
               <div className="space-y-3 text-xs font-semibold text-slate-600">
                 <p className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-emerald-600" /> 双语字幕将在通话中自动生成</p>
-                <p className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-emerald-600" /> {preferences.autoGenerateSummary ? '结束后生成纪要与待办' : '结束后可手动整理纪要'}</p>
+                <p className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-emerald-600" /> {preferences.autoGenerateSummary ? '结束后生成纪要' : '结束后可手动整理纪要'}</p>
                 <p className="flex items-center gap-2"><CheckCircle2 className="h-4 w-4 text-emerald-600" /> 当前仅支持双人通话</p>
               </div>
             </div>
@@ -1547,7 +1858,7 @@ function AiCallWorkspace({
                 </div>
                 <div className="space-y-[clamp(1rem,2.5vh,1.5rem)] text-sm font-semibold text-slate-700">
                   <p className="flex items-center gap-3"><CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" /> 双语字幕将在通话中自动生成</p>
-                  <p className="flex items-center gap-3"><CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" /> {preferences.autoGenerateSummary ? '结束后生成纪要与待办' : '结束后可手动整理纪要'}</p>
+                  <p className="flex items-center gap-3"><CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" /> {preferences.autoGenerateSummary ? '结束后生成纪要' : '结束后可手动整理纪要'}</p>
                   <p className="flex items-center gap-3"><CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" /> 当前仅支持双人通话</p>
                 </div>
               </aside>
@@ -1702,10 +2013,7 @@ function AiCallWorkspace({
               <p className="text-xs font-black text-blue-100">AI 同传助理</p>
               <span className="rounded-full bg-emerald-400/15 px-2 py-0.5 text-[10px] font-bold text-emerald-200">{visibleTurns.length}/{activeCall.turns.length}</span>
             </div>
-            <p className="line-clamp-2 text-xs leading-relaxed text-white/75">{currentTurn?.suggestedAction ?? '持续识别双方发言，并沉淀术语。'}</p>
-            <div className="mt-3 flex flex-wrap gap-1.5">
-              {(currentTurn?.terms ?? []).slice(0, 3).map((term) => <span key={term} className="rounded-full bg-white/10 px-2 py-1 text-[10px] font-bold text-white/80">{term}</span>)}
-            </div>
+            <p className="line-clamp-2 text-xs leading-relaxed text-white/75">{currentTurn?.suggestedAction ?? '持续识别双方发言，并整理通话纪要。'}</p>
             <div className="mt-3 h-1 overflow-hidden rounded-full bg-white/15"><div className="h-full rounded-full bg-emerald-300 transition-all" style={{ width: `${progress}%` }} /></div>
           </aside>
 
@@ -1765,15 +2073,6 @@ function AiCallWorkspace({
             </div>
           </section>
 
-          <section className="rounded-lg border border-slate-200 bg-white p-4">
-            <h2 className="text-sm font-black text-slate-950">待办与术语</h2>
-            <div className="mt-4 space-y-2">
-              {summary.todos.map((todo) => <p key={todo} className="rounded-lg bg-slate-50 px-3 py-2 text-xs font-bold text-slate-700">{todo}</p>)}
-            </div>
-            <div className="mt-4 flex flex-wrap gap-1.5">
-              {summary.terms.map((term) => <span key={term} className="rounded-full bg-blue-50 px-2 py-1 text-[11px] font-bold text-blue-700">{term}</span>)}
-            </div>
-          </section>
         </aside>
 
         {showExitConfirm && (
@@ -1785,7 +2084,7 @@ function AiCallWorkspace({
                 </div>
                 <div>
                   <h3 className="text-lg font-black">结束本次通话？</h3>
-                  <p className="mt-1 text-sm leading-relaxed text-slate-600">系统会保存已生成的双语字幕，并沉淀为本地会议纪要。</p>
+                  <p className="mt-1 text-sm leading-relaxed text-slate-600">系统会保存已生成的双语字幕，并整理为本地会议纪要。</p>
                 </div>
               </div>
               <div className="flex gap-3">
@@ -1802,7 +2101,7 @@ function AiCallWorkspace({
   function renderEndedPanel() {
     const finalSummary = endedSummary ?? summary;
     return (
-      <div className="grid h-full min-h-0 grid-cols-[minmax(0,1fr)_360px] gap-5">
+      <div className="h-full min-h-0">
         <section className="overflow-hidden rounded-lg border border-slate-200 bg-white">
           <div className="flex h-14 items-center justify-between border-b border-slate-100 px-5">
             <h2 className="text-sm font-black text-slate-950">通话已结束</h2>
@@ -1810,9 +2109,8 @@ function AiCallWorkspace({
           </div>
           <div className="p-5">
             <h3 className="text-2xl font-black text-slate-950">{finalSummary.title}</h3>
-            <div className="mt-5 grid grid-cols-3 gap-3">
+            <div className="mt-5 grid grid-cols-2 gap-3">
               <div className="rounded-lg bg-slate-50 p-4"><p className="text-xs font-bold text-slate-500">字幕句数</p><p className="mt-1 text-2xl font-black text-slate-950">{visibleTurns.length}</p></div>
-              <div className="rounded-lg bg-slate-50 p-4"><p className="text-xs font-bold text-slate-500">术语</p><p className="mt-1 text-2xl font-black text-slate-950">{finalSummary.terms.length}</p></div>
               <div className="rounded-lg bg-slate-50 p-4"><p className="text-xs font-bold text-slate-500">通话时长</p><p className="mt-1 text-2xl font-black text-slate-950">{formatDuration(elapsed)}</p></div>
             </div>
             <div className="mt-5 space-y-3">
@@ -1820,16 +2118,6 @@ function AiCallWorkspace({
             </div>
           </div>
         </section>
-        <aside className="rounded-lg border border-slate-200 bg-white p-5">
-          <h3 className="text-sm font-black text-slate-950">待办事项</h3>
-          <div className="mt-4 space-y-2">
-            {finalSummary.todos.map((todo) => <p key={todo} className="rounded-lg bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800">{todo}</p>)}
-          </div>
-          <h3 className="mt-6 text-sm font-black text-slate-950">沉淀术语</h3>
-          <div className="mt-4 flex flex-wrap gap-1.5">
-            {finalSummary.terms.map((term) => <span key={term} className="rounded-full bg-blue-50 px-2 py-1 text-[11px] font-bold text-blue-700">{term}</span>)}
-          </div>
-        </aside>
       </div>
     );
   }
@@ -1842,6 +2130,12 @@ function AiCallWorkspace({
 }
 
 function CaptionLineRow({ line, active }: { line: DesktopCaptionLine; active: boolean }) {
+  const translations = line.translations?.length
+    ? line.translations
+    : line.translatedText
+      ? [{ label: desktopTargetLanguageLabel(line.targetLanguage), translatedText: line.translatedText }]
+      : [];
+
   return (
     <article className={cn(
       'rounded-lg border bg-white p-4 shadow-sm shadow-slate-200/50 transition',
@@ -1851,8 +2145,30 @@ function CaptionLineRow({ line, active }: { line: DesktopCaptionLine; active: bo
       <div className="mb-2">
         <span className="inline-flex h-7 items-center rounded-full bg-slate-100 px-2.5 text-xs font-bold text-slate-700">{line.startedAt}</span>
       </div>
-      <p className="text-sm leading-relaxed text-slate-950">{line.translatedText}</p>
-      <p className="mt-2 text-xs leading-relaxed text-slate-500">{line.originalText}</p>
+      {translations.length > 0 ? (
+        <div className="space-y-2">
+          {translations.map((translation, index) => (
+            <div
+              key={`${line.id}-${translation.label}-${index}`}
+              className={cn(
+                'rounded-lg border px-3 py-2',
+                index === 0 ? 'border-blue-100 bg-blue-50' : 'border-emerald-100 bg-emerald-50/45',
+              )}
+            >
+              <p className={cn('mb-1 text-[11px] font-black', index === 0 ? 'text-blue-600' : 'text-emerald-700')}>
+                {captionTranslationTrackLabel(translation.label, index, translations.length)}
+              </p>
+              <p className={cn('leading-relaxed text-slate-950', index === 0 ? 'text-sm font-semibold' : 'text-xs font-semibold')}>{translation.translatedText}</p>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="text-sm font-semibold leading-relaxed text-slate-500">未生成译文</p>
+      )}
+      <div className="mt-2 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2">
+        <p className="mb-1 text-[11px] font-black text-slate-400">原文 · {captionSourceLanguageLabel(line.sourceLanguage)}</p>
+        <p className="text-xs leading-relaxed text-slate-500">{line.originalText}</p>
+      </div>
     </article>
   );
 }
@@ -1863,10 +2179,12 @@ function LiveCaptionWorkspace({
   overlaySettings,
   preferences,
   captionSessions,
+  planLimitNotice,
   onStart,
   onPause,
   onResume,
   onStop,
+  onDismissPlanLimit,
   onShowOverlay,
   onHideOverlay,
   onUpdateOverlaySettings,
@@ -1878,10 +2196,12 @@ function LiveCaptionWorkspace({
   overlaySettings: CaptionOverlaySettings;
   preferences: DesktopTranslationPreferences;
   captionSessions: DesktopCaptionSession[];
+  planLimitNotice: boolean;
   onStart: (options: StartCaptionStreamOptions) => void;
   onPause: () => void;
   onResume: () => void;
   onStop: () => void;
+  onDismissPlanLimit: () => void;
   onShowOverlay: () => void;
   onHideOverlay: () => void;
   onUpdateOverlaySettings: (settings: Partial<CaptionOverlaySettings>) => void;
@@ -1890,11 +2210,12 @@ function LiveCaptionWorkspace({
 }) {
   const [sourceDevice, setSourceDevice] = useState(streamState.sourceDevice);
   const [sourceLanguage, setSourceLanguage] = useState<DesktopSourceLanguage>(preferences.sourceLanguage);
-  const [targetLanguage, setTargetLanguage] = useState<DesktopTargetLanguage>(preferences.targetLanguage);
+  const [targetLanguages, setTargetLanguages] = useState<DesktopTargetLanguage[]>(() => normalizeDesktopTargetLanguages(preferences.targetLanguages, preferences.targetLanguage));
   const [useTranslationPreferences, setUseTranslationPreferences] = useState(true);
   const [referenceFile, setReferenceFile] = useState<ReferenceFileState | null>(null);
   const [referenceFileError, setReferenceFileError] = useState('');
   const [selectedSessionId, setSelectedSessionId] = useState('');
+  const [allCaptionSessionsOpen, setAllCaptionSessionsOpen] = useState(false);
   const [editingCaptionLineId, setEditingCaptionLineId] = useState('');
   const [captionTranslationDraft, setCaptionTranslationDraft] = useState('');
   const [rememberedCaptionLineId, setRememberedCaptionLineId] = useState('');
@@ -1902,21 +2223,21 @@ function LiveCaptionWorkspace({
   const safeCaptionSessions = captionSessions ?? [];
   const selectedSession = safeCaptionSessions.find((session) => session.id === selectedSessionId) ?? null;
   const sessionPreferenceSummary = useTranslationPreferences
-    ? desktopCaptionSessionSummary(preferences, sourceLanguage, targetLanguage)
-    : desktopCaptionTemporarySummary(sourceLanguage, targetLanguage);
+    ? desktopCaptionSessionSummary(preferences, sourceLanguage, targetLanguages)
+    : desktopCaptionTemporarySummary(sourceLanguage, targetLanguages);
 
   useEffect(() => {
     if (streamState.running || !useTranslationPreferences) return;
     setSourceLanguage(preferences.sourceLanguage);
-    setTargetLanguage(preferences.targetLanguage);
-  }, [preferences.sourceLanguage, preferences.targetLanguage, streamState.running, useTranslationPreferences]);
+    setTargetLanguages(normalizeDesktopTargetLanguages(preferences.targetLanguages, preferences.targetLanguage));
+  }, [preferences.sourceLanguage, preferences.targetLanguage, preferences.targetLanguages, streamState.running, useTranslationPreferences]);
 
   function toggleUseTranslationPreferences() {
     const next = !useTranslationPreferences;
     setUseTranslationPreferences(next);
     if (next && !streamState.running) {
       setSourceLanguage(preferences.sourceLanguage);
-      setTargetLanguage(preferences.targetLanguage);
+      setTargetLanguages(normalizeDesktopTargetLanguages(preferences.targetLanguages, preferences.targetLanguage));
     }
   }
 
@@ -1925,8 +2246,31 @@ function LiveCaptionWorkspace({
     setUseTranslationPreferences(false);
   }
 
-  function updateTargetLanguage(value: DesktopTargetLanguage) {
-    setTargetLanguage(value);
+  function updateTargetLanguage(index: number, value: DesktopTargetLanguage) {
+    setTargetLanguages((current) => {
+      const next = normalizeDesktopTargetLanguages(current, preferences.targetLanguage);
+      next[index] = value;
+      return next.slice(0, 3);
+    });
+    setUseTranslationPreferences(false);
+  }
+
+  function addTargetLanguage() {
+    setTargetLanguages((current) => {
+      if (current.length >= 3) return current;
+      const used = new Set(current);
+      const nextLanguage = TARGET_LANGUAGES.find((item) => item.value !== 'none' && !used.has(item.value))?.value ?? 'none';
+      return [...current, nextLanguage].slice(0, 3);
+    });
+    setUseTranslationPreferences(false);
+  }
+
+  function removeTargetLanguage(index: number) {
+    if (index === 0) return;
+    setTargetLanguages((current) => {
+      const next = current.filter((_, itemIndex) => itemIndex !== index);
+      return normalizeDesktopTargetLanguages(next, preferences.targetLanguage);
+    });
     setUseTranslationPreferences(false);
   }
 
@@ -1975,7 +2319,7 @@ function LiveCaptionWorkspace({
 
   function startCaptionCorrection(line: DesktopCaptionLine) {
     setEditingCaptionLineId(line.id);
-    setCaptionTranslationDraft(line.translatedText);
+    setCaptionTranslationDraft(primaryCaptionTranslationText(line));
   }
 
   function cancelCaptionCorrection() {
@@ -2003,6 +2347,9 @@ function LiveCaptionWorkspace({
 
   function renderCaptionHistorySection() {
     const latestSession = safeCaptionSessions[0];
+    const visibleSessions = latestSession && !streamState.running
+      ? safeCaptionSessions.slice(1, 3)
+      : safeCaptionSessions.slice(0, 3);
 
     return (
       <section className="rounded-lg border border-slate-200 bg-white p-4">
@@ -2011,6 +2358,15 @@ function LiveCaptionWorkspace({
             <History className="h-5 w-5 text-blue-600" />
             <h2 className="text-sm font-black text-slate-950">纪要与历史</h2>
           </div>
+          {safeCaptionSessions.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setAllCaptionSessionsOpen(true)}
+              className="h-8 rounded-lg px-2 text-xs font-black text-blue-700 transition hover:bg-blue-50"
+            >
+              全部
+            </button>
+          )}
         </div>
 
         {streamState.running && (
@@ -2033,7 +2389,7 @@ function LiveCaptionWorkspace({
         )}
 
         <div className="mt-3 space-y-2">
-          {safeCaptionSessions.slice(0, 4).map((session) => (
+          {visibleSessions.map((session) => (
             <button
               key={session.id}
               type="button"
@@ -2052,6 +2408,55 @@ function LiveCaptionWorkspace({
           <p className="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-center text-xs font-semibold leading-5 text-slate-500">暂无历史记录</p>
         )}
       </section>
+    );
+  }
+
+  function renderAllCaptionSessionsDialog() {
+    if (!allCaptionSessionsOpen) return null;
+
+    return (
+      <div className="fixed inset-0 z-[74] flex items-center justify-center bg-slate-950/40 p-6">
+        <div className="flex max-h-[min(86vh,720px)] w-full max-w-2xl flex-col overflow-hidden rounded-lg bg-white shadow-2xl">
+          <div className="flex shrink-0 items-center justify-between gap-4 border-b border-slate-100 p-5">
+            <div className="min-w-0">
+              <h3 className="truncate text-lg font-black text-slate-950">全部历史</h3>
+              <p className="mt-1 text-xs font-semibold text-slate-500">同声传译结束后保存的纪要</p>
+            </div>
+            <button type="button" onClick={() => setAllCaptionSessionsOpen(false)} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-500 transition hover:bg-slate-200" aria-label="关闭">
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+
+          <div className="min-h-0 overflow-y-auto p-4">
+            {safeCaptionSessions.length > 0 ? (
+              <div className="space-y-2">
+                {safeCaptionSessions.map((session) => (
+                  <button
+                    key={session.id}
+                    type="button"
+                    onClick={() => {
+                      setAllCaptionSessionsOpen(false);
+                      openCaptionSession(session.id);
+                    }}
+                    className="flex w-full items-center justify-between gap-4 rounded-lg border border-slate-200 bg-white px-4 py-3 text-left transition hover:border-blue-200 hover:bg-blue-50/50"
+                  >
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-black text-slate-950">{captionSessionTitle(session)}</span>
+                      <span className="mt-1 block truncate text-xs font-semibold text-slate-500">{session.preferenceSummary}</span>
+                    </span>
+                    <span className="shrink-0 text-right">
+                      <span className="block text-xs font-bold text-slate-500">{formatSessionTime(session.endedAt)}</span>
+                      <span className="mt-1 block text-[11px] font-semibold text-slate-400">{formatSessionDuration(session.startedAt, session.endedAt)}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p className="rounded-lg border border-dashed border-slate-200 bg-slate-50 px-3 py-8 text-center text-xs font-semibold leading-5 text-slate-500">暂无历史记录</p>
+            )}
+          </div>
+        </div>
+      </div>
     );
   }
 
@@ -2086,28 +2491,6 @@ function LiveCaptionWorkspace({
                 </div>
               </section>
 
-              <section className="mt-5">
-                <h4 className="text-xs font-black text-slate-500">待办事项</h4>
-                <div className="mt-3 space-y-2">
-                  {selectedSession.summary.todos.map((todo) => (
-                    <label key={todo} className="flex min-h-10 items-center gap-2 rounded-lg bg-amber-50 px-3 py-2 text-xs font-bold text-amber-800">
-                      <input type="checkbox" className="h-4 w-4 rounded border-amber-200" />
-                      <span>{todo}</span>
-                    </label>
-                  ))}
-                </div>
-              </section>
-
-              {selectedSession.summary.terms.length > 0 && (
-                <section className="mt-5">
-                  <h4 className="text-xs font-black text-slate-500">沉淀术语</h4>
-                  <div className="mt-3 flex flex-wrap gap-1.5">
-                    {selectedSession.summary.terms.map((term) => (
-                      <span key={term} className="rounded-full bg-blue-50 px-2 py-1 text-[11px] font-bold text-blue-700">{term}</span>
-                    ))}
-                  </div>
-                </section>
-              )}
             </aside>
 
             <section className="min-h-0 overflow-y-auto p-5">
@@ -2150,8 +2533,15 @@ function LiveCaptionWorkspace({
                           </div>
                         </div>
                       ) : (
-                        <div className="mt-3 rounded-lg bg-blue-50 p-3">
-                          <p className="text-sm font-semibold leading-6 text-blue-800">{line.translatedText}</p>
+                        <div className="mt-3 space-y-2 rounded-lg bg-blue-50 p-3">
+                          {(line.translations?.length ? line.translations : line.translatedText ? [{ label: desktopTargetLanguageLabel(line.targetLanguage), translatedText: line.translatedText }] : []).map((translation, index) => (
+                            <div key={`${line.id}-history-${translation.label}-${index}`} className={cn(index > 0 && 'border-t border-blue-100 pt-2')}>
+                              <p className="mb-1 text-[11px] font-black text-blue-500">
+                                {captionTranslationTrackLabel(translation.label, index, line.translations?.length ?? 1)}
+                              </p>
+                              <p className="text-sm font-semibold leading-6 text-blue-800">{translation.translatedText}</p>
+                            </div>
+                          ))}
                           <div className="mt-2 flex items-center justify-between gap-2">
                             <p className="text-[11px] font-bold text-emerald-600">{rememberedCaptionLineId === line.id ? '已写入记忆' : ''}</p>
                             <button type="button" onClick={() => startCaptionCorrection(line)} className="h-8 rounded-lg px-2 text-xs font-bold text-blue-700 transition hover:bg-blue-100">
@@ -2197,7 +2587,7 @@ function LiveCaptionWorkspace({
               </button>
             </div>
             {!streamState.running && (
-              <button type="button" onClick={() => onStart({ sourceDevice, sourceLanguage, targetLanguage })} className="flex h-10 shrink-0 items-center gap-2 whitespace-nowrap rounded-lg bg-blue-600 px-4 text-sm font-bold text-white transition hover:bg-blue-700 active:scale-[0.98]">
+              <button type="button" onClick={() => onStart({ sourceDevice, sourceLanguage, targetLanguage: activeDesktopTargetLanguages(targetLanguages, preferences.targetLanguage)[0] ?? 'none', targetLanguages })} className="flex h-10 shrink-0 items-center gap-2 whitespace-nowrap rounded-lg bg-blue-600 px-4 text-sm font-bold text-white transition hover:bg-blue-700 active:scale-[0.98]">
                 <Play className="h-4 w-4" />
                 开始
               </button>
@@ -2266,7 +2656,7 @@ function LiveCaptionWorkspace({
 
           <div className="min-h-0 overflow-y-auto pr-1">
             <div className="space-y-3">
-              {(lines.length ? lines : SIMULTANEOUS_CAPTIONS.map((caption, index) => makeFallbackCaptionLine(index))).slice(-12).map((line, index, visibleLines) => {
+              {(lines.length ? lines : SIMULTANEOUS_CAPTIONS.map((caption, index) => makeFallbackCaptionLine(index, targetLanguages))).slice(-12).map((line, index, visibleLines) => {
                 return <CaptionLineRow key={line.id} line={line} active={index === visibleLines.length - 1 && lines.length > 0} />;
               })}
             </div>
@@ -2287,12 +2677,30 @@ function LiveCaptionWorkspace({
                 {SOURCE_LANGUAGES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
               </select>
             </label>
-            <label className="block">
-              <span className="mb-2 block text-xs font-bold text-slate-500">目标语言</span>
-              <select value={targetLanguage} onChange={(event) => updateTargetLanguage(event.target.value as DesktopTargetLanguage)} disabled={streamState.running} className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none focus:border-blue-300 focus:ring-2 focus:ring-blue-100 disabled:opacity-60">
-                {TARGET_LANGUAGES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-              </select>
-            </label>
+            <div className="space-y-2">
+              {targetLanguages.map((language, index) => (
+                <label key={`target-language-${index}`} className="block">
+                  <span className="mb-2 block text-xs font-bold text-slate-500">目标语言{index + 1}</span>
+                  <span className="flex gap-2">
+                    <select value={language} onChange={(event) => updateTargetLanguage(index, event.target.value as DesktopTargetLanguage)} disabled={streamState.running} className="h-10 min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none focus:border-blue-300 focus:ring-2 focus:ring-blue-100 disabled:opacity-60">
+                      {TARGET_LANGUAGES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                    </select>
+                    {index > 0 && (
+                      <button type="button" onClick={() => removeTargetLanguage(index)} disabled={streamState.running} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:bg-slate-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-50" aria-label={`移除目标语言${index + 1}`}>
+                        <Minus className="h-4 w-4" />
+                      </button>
+                    )}
+                  </span>
+                </label>
+              ))}
+
+              {targetLanguages.length < 3 && (
+                <button type="button" onClick={addTargetLanguage} disabled={streamState.running} className="flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-dashed border-slate-300 bg-white text-sm font-bold text-blue-700 transition hover:border-blue-200 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50">
+                  <Plus className="h-4 w-4" />
+                  添加目标语言
+                </button>
+              )}
+            </div>
           </div>
         </section>
 
@@ -2340,8 +2748,8 @@ function LiveCaptionWorkspace({
               </span>
               <input
                 type="range"
-                min="3"
-                max="9"
+                min="2"
+                max="5"
                 step="1"
                 value={overlaySettings.visibleLineCount}
                 onChange={(event) => onUpdateOverlaySettings({ visibleLineCount: Number(event.target.value), visible: true })}
@@ -2395,7 +2803,33 @@ function LiveCaptionWorkspace({
         </section>
       </aside>
 
+      {planLimitNotice && (
+        <div className="fixed inset-0 z-[88] flex items-center justify-center bg-slate-950/45 p-6">
+          <div className="w-full max-w-md rounded-lg bg-white p-5 shadow-2xl">
+            <div className="flex items-start gap-3">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-amber-50 text-amber-600">
+                <Crown className="h-5 w-5" />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-lg font-black text-slate-950">需要开通付费企业版</h3>
+                <p className="mt-2 text-sm leading-6 text-slate-600">当前账号暂未开通字幕同传权限。请联系销售完成企业付费开通后，再开始字幕同传。</p>
+              </div>
+            </div>
+            <div className="mt-5 grid grid-cols-2 gap-3">
+              <button type="button" onClick={onDismissPlanLimit} className="h-11 rounded-lg bg-slate-100 text-sm font-bold text-slate-800 transition hover:bg-slate-200">
+                我知道了
+              </button>
+              <button type="button" onClick={onDismissPlanLimit} className="flex h-11 items-center justify-center gap-2 rounded-lg bg-slate-950 text-sm font-bold text-white transition hover:bg-slate-800">
+                <Handshake className="h-4 w-4" />
+                联系销售
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {renderCaptionSessionDialog()}
+      {renderAllCaptionSessionsDialog()}
     </div>
   );
 }
@@ -2455,6 +2889,29 @@ function TranslationPreferencesWorkspace({
   onTermTranslatedTextChange: (value: string) => void;
   onTermInstructionChange: (value: string) => void;
 }) {
+  const preferenceTargetLanguages = normalizeDesktopTargetLanguages(preferences.targetLanguages, preferences.targetLanguage);
+
+  function updatePreferenceTargetLanguage(index: number, value: DesktopTargetLanguage) {
+    const next = [...preferenceTargetLanguages];
+    next[index] = value;
+    const targetLanguages = normalizeDesktopTargetLanguages(next, preferences.targetLanguage);
+    onUpdatePreferences({ targetLanguages, targetLanguage: activeDesktopTargetLanguages(targetLanguages, preferences.targetLanguage)[0] ?? 'none' });
+  }
+
+  function addPreferenceTargetLanguage() {
+    if (preferenceTargetLanguages.length >= 3) return;
+    const used = new Set(preferenceTargetLanguages);
+    const nextLanguage = TARGET_LANGUAGES.find((item) => item.value !== 'none' && !used.has(item.value))?.value ?? 'none';
+    const targetLanguages = [...preferenceTargetLanguages, nextLanguage].slice(0, 3);
+    onUpdatePreferences({ targetLanguages, targetLanguage: activeDesktopTargetLanguages(targetLanguages, preferences.targetLanguage)[0] ?? 'none' });
+  }
+
+  function removePreferenceTargetLanguage(index: number) {
+    if (index === 0) return;
+    const targetLanguages = normalizeDesktopTargetLanguages(preferenceTargetLanguages.filter((_, itemIndex) => itemIndex !== index), preferences.targetLanguage);
+    onUpdatePreferences({ targetLanguages, targetLanguage: activeDesktopTargetLanguages(targetLanguages, preferences.targetLanguage)[0] ?? 'none' });
+  }
+
   return (
     <div className="flex h-full min-h-0 items-start justify-center overflow-y-auto px-8 pb-10 pt-8">
       <div className="grid w-full max-w-[1160px] grid-cols-[minmax(0,1fr)_minmax(380px,0.92fr)] gap-5">
@@ -2477,15 +2934,30 @@ function TranslationPreferencesWorkspace({
                   {SOURCE_LANGUAGES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
                 </select>
               </label>
-              <label className="block space-y-2">
+              <div className="space-y-2">
                 <span className="flex items-center gap-1.5 text-xs font-bold text-slate-500">
                   <Languages className="h-3.5 w-3.5 text-blue-600" />
                   默认目标语言
                 </span>
-                <select value={preferences.targetLanguage} onChange={(event) => onUpdatePreferences({ targetLanguage: event.target.value as DesktopTargetLanguage })} className="h-11 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm font-semibold text-slate-800 outline-none focus:border-blue-300 focus:bg-white focus:ring-2 focus:ring-blue-100">
-                  {TARGET_LANGUAGES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-                </select>
-              </label>
+                {preferenceTargetLanguages.map((language, index) => (
+                  <div key={`preference-target-${index}`} className="flex gap-2">
+                    <select value={language} onChange={(event) => updatePreferenceTargetLanguage(index, event.target.value as DesktopTargetLanguage)} className="h-11 min-w-0 flex-1 rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm font-semibold text-slate-800 outline-none focus:border-blue-300 focus:bg-white focus:ring-2 focus:ring-blue-100">
+                      {TARGET_LANGUAGES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                    </select>
+                    {index > 0 && (
+                      <button type="button" onClick={() => removePreferenceTargetLanguage(index)} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:bg-slate-50 hover:text-red-600" aria-label={`移除默认目标语言${index + 1}`}>
+                        <Minus className="h-4 w-4" />
+                      </button>
+                    )}
+                  </div>
+                ))}
+                {preferenceTargetLanguages.length < 3 && (
+                  <button type="button" onClick={addPreferenceTargetLanguage} className="flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-dashed border-slate-300 bg-white text-sm font-bold text-blue-700 transition hover:border-blue-200 hover:bg-blue-50">
+                    <Plus className="h-4 w-4" />
+                    添加默认目标语言
+                  </button>
+                )}
+              </div>
             </div>
 
             <div className="space-y-2">
@@ -2699,6 +3171,8 @@ function PreferenceSwitch({ label, checked, onChange }: { label: string; checked
 
 export function DesktopApp() {
   const [activeView, setActiveView] = useState<DesktopView>('captions');
+  const [currentUser, setCurrentUser] = useState<DesktopMockUser | null>(readDesktopMockUser);
+  const [planLimitNotice, setPlanLimitNotice] = useState(false);
   const [overlaySettings, setOverlaySettings] = useState<CaptionOverlaySettings>(DEFAULT_OVERLAY_SETTINGS);
   const [streamState, setStreamState] = useState<CaptionStreamState>(DEFAULT_CAPTION_STATE);
   const previousStreamStateRef = useRef<CaptionStreamState>(DEFAULT_CAPTION_STATE);
@@ -2707,6 +3181,7 @@ export function DesktopApp() {
   const [captionSessions, setCaptionSessions] = useState<DesktopCaptionSession[]>(() => readStoredValue(DESKTOP_CAPTION_SESSIONS_KEY, []));
   const [fallbackRunning, setFallbackRunning] = useState(false);
   const [translationPreferences, setTranslationPreferences] = useState<DesktopTranslationPreferences>(readDesktopPreferences);
+  const enterpriseDemoPreferencesAppliedRef = useRef(false);
   const [desktopTerms, setDesktopTerms] = useState<TermEntry[]>(() => readStoredValue(DESKTOP_TERMS_KEY, DEFAULT_TERMS));
   const [desktopCustomScenes, setDesktopCustomScenes] = useState<DesktopCustomScene[]>(() => readStoredValue(DESKTOP_CUSTOM_SCENES_KEY, []));
   const [isCustomSceneEditorOpen, setIsCustomSceneEditorOpen] = useState(false);
@@ -2743,17 +3218,26 @@ export function DesktopApp() {
     if (!fallbackRunning || window.knowlyDesktop) return;
     const timer = window.setInterval(() => {
       setCaptionLines((current) => {
-        const line = makeFallbackCaptionLine(current.length);
+        const line = makeFallbackCaptionLine(current.length, streamState.targetLanguages);
         setStreamState((state) => ({ ...state, lineCount: line.sequence }));
         return [...current, line].slice(-60);
       });
     }, 2400);
     return () => window.clearInterval(timer);
-  }, [fallbackRunning]);
+  }, [fallbackRunning, streamState.targetLanguages]);
 
   useEffect(() => {
     writeStoredValue(DESKTOP_PREFERENCES_KEY, translationPreferences);
   }, [translationPreferences]);
+
+  useEffect(() => {
+    if (enterpriseDemoPreferencesAppliedRef.current || currentUser?.plan !== 'enterprise') return;
+
+    enterpriseDemoPreferencesAppliedRef.current = true;
+    const demoPreferences = applyMultilingualCaptionDemoPreferences(translationPreferences);
+    setTranslationPreferences(demoPreferences);
+    updateOverlaySettings({ showOriginal: true, showTranslation: true });
+  }, [currentUser?.plan, translationPreferences]);
 
   useEffect(() => {
     writeStoredValue(DESKTOP_TERMS_KEY, desktopTerms);
@@ -2786,10 +3270,46 @@ export function DesktopApp() {
     void api.setOverlaySettings(settings).then(setOverlaySettings);
   }
 
+  function loginMockUser(user: DesktopMockUser) {
+    if (user.plan === 'enterprise') {
+      const demoPreferences = applyMultilingualCaptionDemoPreferences(translationPreferences);
+      enterpriseDemoPreferencesAppliedRef.current = true;
+      setTranslationPreferences(demoPreferences);
+      writeStoredValue(DESKTOP_PREFERENCES_KEY, demoPreferences);
+      updateOverlaySettings({ showOriginal: true, showTranslation: true });
+    }
+    setCurrentUser(user);
+    setActiveView('captions');
+    setPlanLimitNotice(false);
+    setCaptionLines([]);
+    writeStoredValue(DESKTOP_AUTH_USER_KEY, user);
+  }
+
+  function logoutMockUser() {
+    if (streamState.running) {
+      stopCaptionStream();
+    }
+    setFallbackRunning(false);
+    setCurrentUser(null);
+    setPlanLimitNotice(false);
+    setCaptionLines([]);
+    setCaptionSessionStartedAt('');
+    enterpriseDemoPreferencesAppliedRef.current = false;
+    if (typeof window !== 'undefined') {
+      window.localStorage.removeItem(DESKTOP_AUTH_USER_KEY);
+    }
+  }
+
   function startCaptionStream(options: StartCaptionStreamOptions) {
+    if (currentUser?.plan !== 'enterprise') {
+      setPlanLimitNotice(true);
+      return;
+    }
+
     const startedAt = new Date().toISOString();
     setCaptionSessionStartedAt(startedAt);
     setCaptionLines([]);
+    updateOverlaySettings({ showTranslation: true });
     const api = window.knowlyDesktop;
     if (!api) {
       setFallbackRunning(true);
@@ -2829,6 +3349,7 @@ export function DesktopApp() {
     const endedAt = new Date().toISOString();
     const startedAt = captionSessionStartedAt || state.startedAt || lines[0]?.receivedAt || endedAt;
     const sourceDeviceLabel = AUDIO_DEVICES.find((device) => device.id === state.sourceDevice)?.label ?? state.sourceDevice;
+    const targetLanguages = normalizeDesktopTargetLanguages(state.targetLanguages, state.targetLanguage);
     const session: DesktopCaptionSession = {
       id: `desktop-caption-session-${Date.now()}`,
       title: summary.title,
@@ -2837,7 +3358,8 @@ export function DesktopApp() {
       sourceDevice: sourceDeviceLabel,
       sourceLanguage: state.sourceLanguage,
       targetLanguage: state.targetLanguage,
-      preferenceSummary: desktopCaptionSessionSummary(translationPreferences, state.sourceLanguage, state.targetLanguage),
+      targetLanguages,
+      preferenceSummary: desktopCaptionSessionSummary(translationPreferences, state.sourceLanguage, targetLanguages),
       lines,
       turns,
       summary,
@@ -2980,8 +3502,12 @@ export function DesktopApp() {
     void api.hideOverlay().then(setOverlaySettings);
   }
 
+  if (!currentUser) {
+    return <DesktopLoginScreen onLogin={loginMockUser} />;
+  }
+
   return (
-    <DesktopShell activeView={activeView} onChangeView={setActiveView}>
+    <DesktopShell activeView={activeView} currentUser={currentUser} onChangeView={setActiveView} onLogout={logoutMockUser}>
       {activeView === 'call' ? (
         <AiCallWorkspace
           preferences={translationPreferences}
@@ -2994,10 +3520,12 @@ export function DesktopApp() {
           overlaySettings={overlaySettings}
           preferences={translationPreferences}
           captionSessions={captionSessions}
+          planLimitNotice={planLimitNotice}
           onStart={startCaptionStream}
           onPause={pauseCaptionStream}
           onResume={resumeCaptionStream}
           onStop={stopCaptionStream}
+          onDismissPlanLimit={() => setPlanLimitNotice(false)}
           onShowOverlay={showOverlay}
           onHideOverlay={hideOverlay}
           onUpdateOverlaySettings={updateOverlaySettings}

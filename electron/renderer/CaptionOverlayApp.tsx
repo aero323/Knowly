@@ -2,11 +2,14 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { Captions, GripHorizontal, Maximize2, Minimize2, Pause, Play, Radio, Square } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import type { CaptionOverlaySettings, CaptionStreamState, DesktopCaptionLine } from '../shared/desktopApi';
+import { activeDesktopTargetLanguages, desktopTargetLanguageLabel } from '../shared/desktopApi';
 
 const OVERLAY_BASE_WIDTH = 430;
 const OVERLAY_BASE_HEIGHT = 270;
 const OVERLAY_SCROLL_MIN_HEIGHT = 430;
 const OVERLAY_SCROLL_LINE_HEIGHT = 18;
+const OVERLAY_LANGUAGE_HEIGHT_STEP = 112;
+const OVERLAY_SCROLL_LANGUAGE_HEIGHT_STEP = 150;
 const FULLSCREEN_BASE_WIDTH = 1280;
 const FULLSCREEN_BASE_HEIGHT = 720;
 
@@ -17,7 +20,7 @@ const DEFAULT_OVERLAY_SETTINGS: CaptionOverlaySettings = {
   showOriginal: true,
   showTranslation: true,
   scrollMode: true,
-  visibleLineCount: 5,
+  visibleLineCount: 3,
   fullscreen: false,
 };
 
@@ -28,42 +31,51 @@ const DEFAULT_CAPTION_STATE: CaptionStreamState = {
   sourceDevice: 'system-mix',
   sourceLanguage: 'auto',
   targetLanguage: 'zh',
+  targetLanguages: ['zh', 'en', 'th'],
 };
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
-function expectedOverlayHeight(settings: CaptionOverlaySettings) {
-  if (!settings.scrollMode) return OVERLAY_BASE_HEIGHT;
-  return OVERLAY_SCROLL_MIN_HEIGHT + (settings.visibleLineCount - 5) * OVERLAY_SCROLL_LINE_HEIGHT;
+function overlayLanguageCount(state?: CaptionStreamState) {
+  if (!state) return 1;
+  return Math.max(1, activeDesktopTargetLanguages(state.targetLanguages, state.targetLanguage).length);
+}
+
+function expectedOverlayHeight(settings: CaptionOverlaySettings, state?: CaptionStreamState) {
+  const extraLanguageCount = overlayLanguageCount(state) - 1;
+  if (!settings.scrollMode) return OVERLAY_BASE_HEIGHT + extraLanguageCount * OVERLAY_LANGUAGE_HEIGHT_STEP;
+  return OVERLAY_SCROLL_MIN_HEIGHT
+    + (settings.visibleLineCount - 5) * OVERLAY_SCROLL_LINE_HEIGHT
+    + extraLanguageCount * OVERLAY_SCROLL_LANGUAGE_HEIGHT_STEP;
 }
 
 function fontSize(basePx: number, scale: number) {
   return `${Math.round(basePx * scale * 10) / 10}px`;
 }
 
-function useWindowScale(settings: CaptionOverlaySettings) {
+function useWindowScale(settings: CaptionOverlaySettings, streamState: CaptionStreamState) {
   const [windowSize, setWindowSize] = useState(() => ({
     width: window.innerWidth || OVERLAY_BASE_WIDTH,
-    height: window.innerHeight || expectedOverlayHeight(DEFAULT_OVERLAY_SETTINGS),
+    height: window.innerHeight || expectedOverlayHeight(DEFAULT_OVERLAY_SETTINGS, DEFAULT_CAPTION_STATE),
   }));
 
   useEffect(() => {
     function syncWindowSize() {
       setWindowSize({
         width: window.innerWidth || OVERLAY_BASE_WIDTH,
-        height: window.innerHeight || expectedOverlayHeight(settings),
+        height: window.innerHeight || expectedOverlayHeight(settings, streamState),
       });
     }
 
     syncWindowSize();
     window.addEventListener('resize', syncWindowSize);
     return () => window.removeEventListener('resize', syncWindowSize);
-  }, [settings]);
+  }, [settings, streamState]);
 
   const baseWidth = settings.fullscreen ? FULLSCREEN_BASE_WIDTH : OVERLAY_BASE_WIDTH;
-  const baseHeight = settings.fullscreen ? FULLSCREEN_BASE_HEIGHT : expectedOverlayHeight(settings);
+  const baseHeight = settings.fullscreen ? FULLSCREEN_BASE_HEIGHT : expectedOverlayHeight(settings, streamState);
   const sizeScale = Math.sqrt((windowSize.width * windowSize.height) / (baseWidth * baseHeight));
 
   return settings.fontScale * clamp(sizeScale, settings.fullscreen ? 0.9 : 0.75, settings.fullscreen ? 1.35 : 2.1);
@@ -95,42 +107,72 @@ function EmptyCaption({ textScale }: { textScale: number }) {
   );
 }
 
+function captionTranslations(line: DesktopCaptionLine) {
+  return line.translations?.length
+    ? line.translations
+    : line.translatedText
+      ? [{ label: desktopTargetLanguageLabel(line.targetLanguage), translatedText: line.translatedText }]
+      : [];
+}
+
 function CaptionDisplay({ line, settings, textScale }: { line: DesktopCaptionLine; settings: CaptionOverlaySettings; textScale: number }) {
+  const translations = captionTranslations(line);
+  const translationBaseSize = settings.fullscreen
+    ? translations.length > 1 ? 38 : 60
+    : translations.length > 1 ? 16 : 20;
+
   return (
     <div
       className={cn(
         'flex min-h-0 flex-1 flex-col justify-center overflow-hidden',
-        settings.fullscreen ? 'px-[8vw] pb-[10vh]' : 'px-5 pb-4',
+        settings.fullscreen ? 'px-[8vw] pb-[9vh]' : 'px-5 pb-4',
       )}
     >
-      {settings.showTranslation && (
-        <p
-          className="font-black leading-snug text-white"
-          style={{ fontSize: fontSize(settings.fullscreen ? 60 : 20, textScale) }}
-        >
-          {line.translatedText}
-        </p>
+      {settings.showTranslation && translations.length > 0 && (
+        <div className={cn(settings.fullscreen ? 'space-y-3' : 'space-y-2')}>
+          {translations.map((translation, index) => (
+            <div
+              key={`${line.id}-${translation.label}-${index}`}
+              className={cn(
+                'rounded-lg border border-white/10 bg-white/[0.055]',
+                settings.fullscreen ? 'px-5 py-4' : 'px-3 py-2',
+              )}
+            >
+              <p
+                className="font-black leading-snug text-white/92"
+                style={{ fontSize: fontSize(translationBaseSize, textScale) }}
+              >
+                {translation.translatedText}
+              </p>
+            </div>
+          ))}
+        </div>
       )}
       {settings.showOriginal && (
-        <p
-          className={cn('leading-relaxed text-white/58', settings.fullscreen ? 'mt-6' : 'mt-2')}
-          style={{ fontSize: fontSize(settings.fullscreen ? 30 : 14, textScale) }}
-        >
-          {line.originalText}
-        </p>
+        <div className={cn('rounded-lg border border-white/8 bg-black/12', settings.fullscreen ? 'mt-4 px-5 py-3' : 'mt-2 px-3 py-2')}>
+          <p
+            className="leading-relaxed text-white/58"
+            style={{ fontSize: fontSize(settings.fullscreen ? 26 : 13, textScale) }}
+          >
+            {line.originalText}
+          </p>
+        </div>
       )}
     </div>
   );
 }
 
 function ScrollingCaptionDisplay({ lines, settings, textScale }: { lines: DesktopCaptionLine[]; settings: CaptionOverlaySettings; textScale: number }) {
-  const visibleLines = lines.slice(-settings.visibleLineCount);
+  const activeTranslationCount = captionTranslations(lines[lines.length - 1] ?? ({} as DesktopCaptionLine)).length;
+  const maxVisibleLines = Math.max(2, settings.visibleLineCount - Math.max(0, activeTranslationCount - 1));
+  const visibleLines = lines.slice(-maxVisibleLines);
 
   return (
     <div className={cn('min-h-0 flex-1 overflow-hidden', settings.fullscreen ? 'px-[7vw] pb-[18vh]' : 'px-5 pb-4')}>
       <div className={cn('flex h-full flex-col justify-end', settings.fullscreen ? 'gap-5' : 'gap-2.5')}>
         {visibleLines.map((line, index) => {
           const active = index === visibleLines.length - 1;
+          const translations = captionTranslations(line);
           return (
             <article
               key={line.id}
@@ -142,27 +184,44 @@ function ScrollingCaptionDisplay({ lines, settings, textScale }: { lines: Deskto
                   : 'border-white/8 bg-white/[0.04] opacity-55',
               )}
             >
-              {settings.showTranslation && (
-                <p
-                  className={cn(
-                    'font-black leading-snug',
-                    active ? 'text-white' : 'text-white/76',
-                  )}
-                  style={{ fontSize: fontSize(settings.fullscreen ? active ? 48 : 30 : active ? 16 : 14, textScale) }}
-                >
-                  {line.translatedText}
-                </p>
+              {settings.showTranslation && translations.length > 0 && (
+                <div className={cn(settings.fullscreen ? active ? 'space-y-3' : 'space-y-2' : active ? 'space-y-2' : 'space-y-1.5')}>
+                  {translations.map((translation, translationIndex) => (
+                    <div
+                      key={`${line.id}-${translation.label}-${translationIndex}`}
+                      className={cn(
+                        'rounded-md border border-white/8 bg-white/[0.05]',
+                        settings.fullscreen ? active ? 'px-4 py-3' : 'px-3 py-2' : active ? 'px-3 py-2' : 'px-2.5 py-1.5',
+                        !active && 'bg-white/[0.035]',
+                      )}
+                    >
+                      <p
+                        className={cn(
+                          'font-black leading-snug',
+                          active ? 'text-white/94' : 'text-white/72',
+                        )}
+                        style={{ fontSize: fontSize(settings.fullscreen ? active ? 36 : 22 : active ? 16 : 12, textScale) }}
+                      >
+                        {translation.translatedText}
+                      </p>
+                    </div>
+                  ))}
+                </div>
               )}
               {settings.showOriginal && (
-                <p
+                <div
                   className={cn(
-                    'leading-relaxed',
-                    settings.fullscreen ? active ? 'mt-3 text-white/62' : 'mt-2 text-white/42' : active ? 'mt-1 text-white/62' : 'mt-1 text-white/42',
+                    'rounded-md border border-white/6 bg-black/12',
+                    settings.fullscreen ? active ? 'mt-3 px-4 py-3' : 'mt-2 px-3 py-2' : active ? 'mt-2 px-3 py-2' : 'mt-1.5 px-2.5 py-1.5',
                   )}
-                  style={{ fontSize: fontSize(settings.fullscreen ? active ? 24 : 20 : active ? 12 : 11, textScale) }}
                 >
-                  {line.originalText}
-                </p>
+                  <p
+                    className={cn('leading-relaxed', active ? 'text-white/62' : 'text-white/42')}
+                    style={{ fontSize: fontSize(settings.fullscreen ? active ? 23 : 18 : active ? 12 : 10.5, textScale) }}
+                  >
+                    {line.originalText}
+                  </p>
+                </div>
               )}
             </article>
           );
@@ -177,7 +236,7 @@ export function CaptionOverlayApp() {
   const [streamState, setStreamState] = useState<CaptionStreamState>(DEFAULT_CAPTION_STATE);
   const [lines, setLines] = useState<DesktopCaptionLine[]>([]);
   const activeLine = lines[lines.length - 1];
-  const textScale = useWindowScale(settings);
+  const textScale = useWindowScale(settings, streamState);
 
   useEffect(() => {
     const api = window.knowlyDesktop;

@@ -2,6 +2,8 @@ import { app, BrowserWindow, ipcMain, screen, shell } from 'electron';
 import path from 'node:path';
 import { SIMULTANEOUS_CAPTIONS } from '../../src/data/mockData';
 import {
+  activeDesktopTargetLanguages,
+  buildDesktopCaptionTranslations,
   DESKTOP_IPC,
   type CaptionOverlaySettings,
   type CaptionStreamState,
@@ -15,6 +17,8 @@ const OVERLAY_WIDTH = 430;
 const OVERLAY_HEIGHT = 270;
 const OVERLAY_SCROLL_MIN_HEIGHT = 430;
 const OVERLAY_SCROLL_LINE_HEIGHT = 18;
+const OVERLAY_LANGUAGE_HEIGHT_STEP = 112;
+const OVERLAY_SCROLL_LANGUAGE_HEIGHT_STEP = 150;
 const OVERLAY_MARGIN = 22;
 
 let mainWindow: BrowserWindow | null = null;
@@ -30,7 +34,7 @@ let overlaySettings: CaptionOverlaySettings = {
   showOriginal: true,
   showTranslation: true,
   scrollMode: true,
-  visibleLineCount: 5,
+  visibleLineCount: 3,
   fullscreen: false,
 };
 
@@ -41,6 +45,7 @@ let captionState: CaptionStreamState = {
   sourceDevice: 'system-mix',
   sourceLanguage: 'auto',
   targetLanguage: 'zh',
+  targetLanguages: ['zh'],
 };
 
 function rendererUrl(page: string) {
@@ -119,14 +124,26 @@ function createMainWindow() {
   loadRenderer(mainWindow, 'desktop.html');
 }
 
+function overlayLanguageCount() {
+  return Math.max(1, activeDesktopTargetLanguages(captionState.targetLanguages, captionState.targetLanguage).length);
+}
+
 function overlayHeight() {
-  if (!overlaySettings.scrollMode) return OVERLAY_HEIGHT;
-  return OVERLAY_SCROLL_MIN_HEIGHT + (overlaySettings.visibleLineCount - 5) * OVERLAY_SCROLL_LINE_HEIGHT;
+  const extraLanguageCount = overlayLanguageCount() - 1;
+  if (!overlaySettings.scrollMode) return OVERLAY_HEIGHT + extraLanguageCount * OVERLAY_LANGUAGE_HEIGHT_STEP;
+  return OVERLAY_SCROLL_MIN_HEIGHT
+    + (overlaySettings.visibleLineCount - 5) * OVERLAY_SCROLL_LINE_HEIGHT
+    + extraLanguageCount * OVERLAY_SCROLL_LANGUAGE_HEIGHT_STEP;
+}
+
+function constrainedOverlayHeight() {
+  const { workArea } = screen.getPrimaryDisplay();
+  return Math.min(overlayHeight(), workArea.height - OVERLAY_MARGIN * 2);
 }
 
 function defaultOverlayBounds() {
   const { workArea } = screen.getPrimaryDisplay();
-  const height = overlayHeight();
+  const height = constrainedOverlayHeight();
   const width = OVERLAY_WIDTH;
   return {
     x: workArea.x + workArea.width - width - OVERLAY_MARGIN,
@@ -149,7 +166,7 @@ function resizeOverlayForMode() {
   const currentBounds = overlayWindow.getBounds();
   overlayWindow.setBounds({
     ...currentBounds,
-    height: overlayHeight(),
+    height: constrainedOverlayHeight(),
   });
 }
 
@@ -222,7 +239,7 @@ function setOverlaySettings(settings: Partial<CaptionOverlaySettings>) {
     ...settings,
     opacity: clamp(settings.opacity ?? overlaySettings.opacity, 0.55, 1),
     fontScale: clamp(settings.fontScale ?? overlaySettings.fontScale, 0.86, 1.32),
-    visibleLineCount: Math.round(clamp(settings.visibleLineCount ?? overlaySettings.visibleLineCount, 3, 9)),
+    visibleLineCount: Math.round(clamp(settings.visibleLineCount ?? overlaySettings.visibleLineCount, 2, 5)),
   };
 
   if (overlaySettings.visible) {
@@ -271,11 +288,17 @@ function formatElapsed(seconds: number) {
 function nextCaptionLine(): DesktopCaptionLine {
   const caption = SIMULTANEOUS_CAPTIONS[captionCursor % SIMULTANEOUS_CAPTIONS.length];
   const sequence = captionCursor + 1;
+  const targetLanguages = captionState.targetLanguages ?? [captionState.targetLanguage];
+  const translations = buildDesktopCaptionTranslations(caption.originalText, caption.translatedText, targetLanguages);
+  const primaryTranslation = translations[0];
   captionCursor += 1;
 
   return {
     ...caption,
     id: `desktop-caption-${Date.now()}-${sequence}`,
+    targetLanguage: primaryTranslation?.targetLanguage ?? 'none',
+    translatedText: primaryTranslation?.translatedText ?? '',
+    translations,
     sequence,
     startedAt: formatElapsed(8 + sequence * 7),
     receivedAt: new Date().toISOString(),
@@ -308,14 +331,19 @@ function startCaptionTimer() {
 
 function startCaptionStream(options: StartCaptionStreamOptions) {
   captionCursor = 0;
+  const targetLanguages = (options.targetLanguages?.length ? options.targetLanguages : [options.targetLanguage]).slice(0, 3);
+  const activeTargetLanguages = activeDesktopTargetLanguages(targetLanguages, options.targetLanguage);
   captionState = {
     ...options,
+    targetLanguages,
+    targetLanguage: activeTargetLanguages[0] ?? 'none',
     running: true,
     paused: false,
     lineCount: 0,
     startedAt: new Date().toISOString(),
   };
   showOverlay();
+  resizeOverlayForMode();
   broadcastCaptionState();
   startCaptionTimer();
   return captionState;
