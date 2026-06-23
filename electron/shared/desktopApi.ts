@@ -14,6 +14,7 @@ export const DESKTOP_IPC = {
   captionsStop: 'desktop:captions-stop',
   captionsStateGet: 'desktop:captions-state-get',
   captionsStateChanged: 'desktop:captions-state-changed',
+  captionsLanguageStatesChanged: 'desktop:captions-language-states-changed',
   captionsLine: 'desktop:captions-line',
 } as const;
 
@@ -59,6 +60,17 @@ export interface CaptionOverlaySettings {
   fullscreen: boolean;
 }
 
+export type DesktopCaptionLanguageStatus = 'connecting' | 'live' | 'error' | 'reconnecting';
+
+export interface DesktopCaptionLanguageState {
+  targetLanguage: DesktopActiveTargetLanguage;
+  label: string;
+  status: DesktopCaptionLanguageStatus;
+  message?: string;
+  lastSequence?: number;
+  updatedAt: string;
+}
+
 export interface StartCaptionStreamOptions {
   sourceDevice: string;
   sourceLanguage: DesktopSourceLanguage;
@@ -71,6 +83,7 @@ export interface CaptionStreamState extends StartCaptionStreamOptions {
   paused: boolean;
   lineCount: number;
   startedAt?: string;
+  languageStates?: DesktopCaptionLanguageState[];
 }
 
 export type DesktopCaptionLine = Omit<SimultaneousCaption, 'targetLanguage'> & {
@@ -113,6 +126,25 @@ export function activeDesktopTargetLanguages(
       return true;
     })
     .slice(0, 3);
+}
+
+export function buildDesktopCaptionLanguageStates(
+  targetLanguages: DesktopTargetLanguage[] | undefined,
+  fallback: DesktopTargetLanguage = 'zh',
+  status: DesktopCaptionLanguageStatus = 'live',
+  message?: string,
+  lastSequence?: number,
+): DesktopCaptionLanguageState[] {
+  const updatedAt = new Date().toISOString();
+
+  return activeDesktopTargetLanguages(targetLanguages, fallback).map((targetLanguage) => ({
+    targetLanguage,
+    label: desktopTargetLanguageLabel(targetLanguage),
+    status,
+    message,
+    lastSequence,
+    updatedAt,
+  }));
 }
 
 type CaptionTopic = 'ship' | 'dp' | 'docs' | 'demurrage';
@@ -235,5 +267,6 @@ export interface KnowlyDesktopApi {
   getCaptionStreamState: () => Promise<CaptionStreamState>;
   onCaptionLine: (callback: (line: DesktopCaptionLine) => void) => () => void;
   onCaptionState: (callback: (state: CaptionStreamState) => void) => () => void;
+  onCaptionLanguageStates: (callback: (states: DesktopCaptionLanguageState[]) => void) => () => void;
   onOverlaySettings: (callback: (settings: CaptionOverlaySettings) => void) => () => void;
 }

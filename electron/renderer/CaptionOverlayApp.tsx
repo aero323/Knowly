@@ -1,15 +1,20 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { Captions, GripHorizontal, Maximize2, Minimize2, Pause, Play, Radio, Square } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { CaptionOverlaySettings, CaptionStreamState, DesktopCaptionLine } from '../shared/desktopApi';
+import type {
+  CaptionOverlaySettings,
+  CaptionStreamState,
+  DesktopCaptionLanguageState,
+  DesktopCaptionLine,
+  DesktopCaptionTranslation,
+} from '../shared/desktopApi';
 import { activeDesktopTargetLanguages, desktopTargetLanguageLabel } from '../shared/desktopApi';
 
 const OVERLAY_BASE_WIDTH = 430;
+const OVERLAY_COLUMN_WIDTH = 330;
 const OVERLAY_BASE_HEIGHT = 270;
 const OVERLAY_SCROLL_MIN_HEIGHT = 430;
 const OVERLAY_SCROLL_LINE_HEIGHT = 18;
-const OVERLAY_LANGUAGE_HEIGHT_STEP = 112;
-const OVERLAY_SCROLL_LANGUAGE_HEIGHT_STEP = 150;
 const FULLSCREEN_BASE_WIDTH = 1280;
 const FULLSCREEN_BASE_HEIGHT = 720;
 
@@ -43,12 +48,15 @@ function overlayLanguageCount(state?: CaptionStreamState) {
   return Math.max(1, activeDesktopTargetLanguages(state.targetLanguages, state.targetLanguage).length);
 }
 
-function expectedOverlayHeight(settings: CaptionOverlaySettings, state?: CaptionStreamState) {
-  const extraLanguageCount = overlayLanguageCount(state) - 1;
-  if (!settings.scrollMode) return OVERLAY_BASE_HEIGHT + extraLanguageCount * OVERLAY_LANGUAGE_HEIGHT_STEP;
-  return OVERLAY_SCROLL_MIN_HEIGHT
-    + (settings.visibleLineCount - 5) * OVERLAY_SCROLL_LINE_HEIGHT
-    + extraLanguageCount * OVERLAY_SCROLL_LANGUAGE_HEIGHT_STEP;
+function expectedOverlayWidth(settings: CaptionOverlaySettings, state?: CaptionStreamState) {
+  if (settings.fullscreen) return FULLSCREEN_BASE_WIDTH;
+  if (!settings.showTranslation) return OVERLAY_BASE_WIDTH;
+  return OVERLAY_BASE_WIDTH + Math.max(0, overlayLanguageCount(state) - 1) * OVERLAY_COLUMN_WIDTH;
+}
+
+function expectedOverlayHeight(settings: CaptionOverlaySettings) {
+  if (!settings.scrollMode) return OVERLAY_BASE_HEIGHT;
+  return OVERLAY_SCROLL_MIN_HEIGHT + (settings.visibleLineCount - 5) * OVERLAY_SCROLL_LINE_HEIGHT;
 }
 
 function fontSize(basePx: number, scale: number) {
@@ -58,24 +66,24 @@ function fontSize(basePx: number, scale: number) {
 function useWindowScale(settings: CaptionOverlaySettings, streamState: CaptionStreamState) {
   const [windowSize, setWindowSize] = useState(() => ({
     width: window.innerWidth || OVERLAY_BASE_WIDTH,
-    height: window.innerHeight || expectedOverlayHeight(DEFAULT_OVERLAY_SETTINGS, DEFAULT_CAPTION_STATE),
+    height: window.innerHeight || expectedOverlayHeight(DEFAULT_OVERLAY_SETTINGS),
   }));
 
   useEffect(() => {
     function syncWindowSize() {
       setWindowSize({
         width: window.innerWidth || OVERLAY_BASE_WIDTH,
-        height: window.innerHeight || expectedOverlayHeight(settings, streamState),
+        height: window.innerHeight || expectedOverlayHeight(settings),
       });
     }
 
     syncWindowSize();
     window.addEventListener('resize', syncWindowSize);
     return () => window.removeEventListener('resize', syncWindowSize);
-  }, [settings, streamState]);
+  }, [settings]);
 
-  const baseWidth = settings.fullscreen ? FULLSCREEN_BASE_WIDTH : OVERLAY_BASE_WIDTH;
-  const baseHeight = settings.fullscreen ? FULLSCREEN_BASE_HEIGHT : expectedOverlayHeight(settings, streamState);
+  const baseWidth = expectedOverlayWidth(settings, streamState);
+  const baseHeight = settings.fullscreen ? FULLSCREEN_BASE_HEIGHT : expectedOverlayHeight(settings);
   const sizeScale = Math.sqrt((windowSize.width * windowSize.height) / (baseWidth * baseHeight));
 
   return settings.fontScale * clamp(sizeScale, settings.fullscreen ? 0.9 : 0.75, settings.fullscreen ? 1.35 : 2.1);
@@ -107,72 +115,82 @@ function EmptyCaption({ textScale }: { textScale: number }) {
   );
 }
 
-function captionTranslations(line: DesktopCaptionLine) {
-  return line.translations?.length
-    ? line.translations
-    : line.translatedText
-      ? [{ label: desktopTargetLanguageLabel(line.targetLanguage), translatedText: line.translatedText }]
-      : [];
+function captionTranslation(line: DesktopCaptionLine, targetLanguage: string): DesktopCaptionTranslation | undefined {
+  const translation = line.translations?.find((item) => item.targetLanguage === targetLanguage);
+  if (translation) return translation;
+  if (line.targetLanguage === 'none' || line.targetLanguage !== targetLanguage || !line.translatedText) return undefined;
+  return {
+    targetLanguage: line.targetLanguage,
+    label: desktopTargetLanguageLabel(line.targetLanguage),
+    translatedText: line.translatedText,
+  };
 }
 
-function CaptionDisplay({ line, settings, textScale }: { line: DesktopCaptionLine; settings: CaptionOverlaySettings; textScale: number }) {
-  const translations = captionTranslations(line);
-  const translationBaseSize = settings.fullscreen
-    ? translations.length > 1 ? 38 : 60
-    : translations.length > 1 ? 16 : 20;
+function languagePillTone(status: DesktopCaptionLanguageState['status']) {
+  if (status === 'error' || status === 'reconnecting') return 'border-rose-300/30 bg-rose-400/12 text-rose-50';
+  return 'border-white/10 bg-white/10 text-white/86';
+}
 
-  return (
-    <div
-      className={cn(
-        'flex min-h-0 flex-1 flex-col justify-center overflow-hidden',
-        settings.fullscreen ? 'px-[8vw] pb-[9vh]' : 'px-5 pb-4',
-      )}
-    >
-      {settings.showTranslation && translations.length > 0 && (
-        <div className={cn(settings.fullscreen ? 'space-y-3' : 'space-y-2')}>
-          {translations.map((translation, index) => (
-            <div
-              key={`${line.id}-${translation.label}-${index}`}
-              className={cn(
-                'rounded-lg border border-white/10 bg-white/[0.055]',
-                settings.fullscreen ? 'px-5 py-4' : 'px-3 py-2',
-              )}
-            >
-              <p
-                className="font-black leading-snug text-white/92"
-                style={{ fontSize: fontSize(translationBaseSize, textScale) }}
-              >
-                {translation.translatedText}
-              </p>
-            </div>
-          ))}
-        </div>
-      )}
-      {settings.showOriginal && (
-        <div className={cn('rounded-lg border border-white/8 bg-black/12', settings.fullscreen ? 'mt-4 px-5 py-3' : 'mt-2 px-3 py-2')}>
+function clampTextStyle(fontPx: string, lines: number): CSSProperties {
+  return {
+    fontSize: fontPx,
+    display: '-webkit-box',
+    WebkitBoxOrient: 'vertical',
+    WebkitLineClamp: lines,
+    overflow: 'hidden',
+  };
+}
+
+function resolveLanguageStates(streamState: CaptionStreamState) {
+  const activeLanguages = activeDesktopTargetLanguages(streamState.targetLanguages, streamState.targetLanguage);
+  const fallbackUpdatedAt = streamState.startedAt ?? new Date().toISOString();
+  const fallbackStatus: DesktopCaptionLanguageState['status'] = streamState.running ? 'live' : 'connecting';
+  const statesByLanguage = new Map(
+    (streamState.languageStates ?? []).map((state) => [state.targetLanguage, state] as const),
+  );
+
+  return activeLanguages.map((targetLanguage) => statesByLanguage.get(targetLanguage) ?? {
+    targetLanguage,
+    label: desktopTargetLanguageLabel(targetLanguage),
+    status: fallbackStatus,
+    updatedAt: fallbackUpdatedAt,
+  });
+}
+
+function OriginalOnlyDisplay({
+  lines,
+  settings,
+  textScale,
+}: {
+  lines: DesktopCaptionLine[];
+  settings: CaptionOverlaySettings;
+  textScale: number;
+}) {
+  const visibleLines = lines.slice(-Math.max(1, settings.visibleLineCount));
+
+  if (!settings.scrollMode) {
+    const activeLine = visibleLines[visibleLines.length - 1];
+    if (!activeLine) return null;
+
+    return (
+      <div className={cn('flex min-h-0 flex-1 flex-col justify-center overflow-hidden', settings.fullscreen ? 'px-[8vw] pb-[15vh]' : 'px-5 pb-4')}>
+        <div className={cn('rounded-lg border border-white/8 bg-black/12', settings.fullscreen ? 'px-5 py-4' : 'px-3 py-2')}>
           <p
-            className="leading-relaxed text-white/58"
-            style={{ fontSize: fontSize(settings.fullscreen ? 26 : 13, textScale) }}
+            className="leading-relaxed text-white/82"
+            style={clampTextStyle(fontSize(settings.fullscreen ? 32 : 13, textScale), settings.fullscreen ? 3 : 2)}
           >
-            {line.originalText}
+            {activeLine.originalText}
           </p>
         </div>
-      )}
-    </div>
-  );
-}
-
-function ScrollingCaptionDisplay({ lines, settings, textScale }: { lines: DesktopCaptionLine[]; settings: CaptionOverlaySettings; textScale: number }) {
-  const activeTranslationCount = captionTranslations(lines[lines.length - 1] ?? ({} as DesktopCaptionLine)).length;
-  const maxVisibleLines = Math.max(2, settings.visibleLineCount - Math.max(0, activeTranslationCount - 1));
-  const visibleLines = lines.slice(-maxVisibleLines);
+      </div>
+    );
+  }
 
   return (
-    <div className={cn('min-h-0 flex-1 overflow-hidden', settings.fullscreen ? 'px-[7vw] pb-[18vh]' : 'px-5 pb-4')}>
+    <div className={cn('min-h-0 flex-1 overflow-hidden', settings.fullscreen ? 'px-[7vw] pb-[22vh]' : 'px-5 pb-4')}>
       <div className={cn('flex h-full flex-col justify-end', settings.fullscreen ? 'gap-5' : 'gap-2.5')}>
         {visibleLines.map((line, index) => {
           const active = index === visibleLines.length - 1;
-          const translations = captionTranslations(line);
           return (
             <article
               key={line.id}
@@ -181,51 +199,170 @@ function ScrollingCaptionDisplay({ lines, settings, textScale }: { lines: Deskto
                 settings.fullscreen ? 'px-6 py-5' : 'px-3 py-2',
                 active
                   ? 'border-blue-300/35 bg-blue-400/15 shadow-lg shadow-blue-950/20'
-                  : 'border-white/8 bg-white/[0.04] opacity-55',
+                  : 'border-white/8 bg-white/[0.04] opacity-72',
               )}
             >
-              {settings.showTranslation && translations.length > 0 && (
-                <div className={cn(settings.fullscreen ? active ? 'space-y-3' : 'space-y-2' : active ? 'space-y-2' : 'space-y-1.5')}>
-                  {translations.map((translation, translationIndex) => (
-                    <div
-                      key={`${line.id}-${translation.label}-${translationIndex}`}
-                      className={cn(
-                        'rounded-md border border-white/8 bg-white/[0.05]',
-                        settings.fullscreen ? active ? 'px-4 py-3' : 'px-3 py-2' : active ? 'px-3 py-2' : 'px-2.5 py-1.5',
-                        !active && 'bg-white/[0.035]',
-                      )}
-                    >
-                      <p
-                        className={cn(
-                          'font-black leading-snug',
-                          active ? 'text-white/94' : 'text-white/72',
-                        )}
-                        style={{ fontSize: fontSize(settings.fullscreen ? active ? 36 : 22 : active ? 16 : 12, textScale) }}
-                      >
-                        {translation.translatedText}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {settings.showOriginal && (
-                <div
-                  className={cn(
-                    'rounded-md border border-white/6 bg-black/12',
-                    settings.fullscreen ? active ? 'mt-3 px-4 py-3' : 'mt-2 px-3 py-2' : active ? 'mt-2 px-3 py-2' : 'mt-1.5 px-2.5 py-1.5',
-                  )}
-                >
-                  <p
-                    className={cn('leading-relaxed', active ? 'text-white/62' : 'text-white/42')}
-                    style={{ fontSize: fontSize(settings.fullscreen ? active ? 23 : 18 : active ? 12 : 10.5, textScale) }}
-                  >
-                    {line.originalText}
-                  </p>
-                </div>
-              )}
+              <p
+                className={cn('leading-relaxed', active ? 'text-white/82' : 'text-white/58')}
+                style={clampTextStyle(fontSize(settings.fullscreen ? active ? 30 : 22 : active ? 12 : 10.5, textScale), settings.fullscreen ? active ? 3 : 2 : active ? 2 : 2)}
+              >
+                {line.originalText}
+              </p>
             </article>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+function LanguageCell({
+  line,
+  languageState,
+  settings,
+  textScale,
+  active,
+}: {
+  line: DesktopCaptionLine;
+  languageState: DesktopCaptionLanguageState;
+  settings: CaptionOverlaySettings;
+  textScale: number;
+  active: boolean;
+}) {
+  const translation = captionTranslation(line, languageState.targetLanguage);
+  const blocked = languageState.status !== 'live';
+  const frozen = blocked && (typeof languageState.lastSequence !== 'number' || line.sequence > languageState.lastSequence);
+  const cellTone = frozen
+    ? 'border-rose-300/22 bg-rose-400/10'
+    : active
+      ? 'border-blue-300/35 bg-blue-400/15 shadow-lg shadow-blue-950/12'
+      : 'border-white/8 bg-white/[0.045]';
+  const bodyTone = frozen ? 'text-rose-50' : active ? 'text-white/92' : 'text-white/76';
+  const bodySize = settings.fullscreen ? active ? 31 : 23 : active ? 15 : 11.5;
+  const clampLines = settings.fullscreen ? active ? 4 : 3 : active ? 3 : 2;
+
+  return (
+    <article
+      className={cn(
+        'flex min-h-0 flex-col rounded-lg border transition',
+        settings.fullscreen ? 'px-4 py-3' : 'px-3 py-2',
+        cellTone,
+      )}
+    >
+      {frozen ? (
+        <div className="flex min-h-[64px] flex-1 items-center">
+          <p className="text-xs font-semibold leading-relaxed text-rose-50/78">
+            {languageState.message || '等待恢复'}
+          </p>
+        </div>
+      ) : translation ? (
+        <p
+          className={cn('font-black leading-snug', bodyTone)}
+          style={clampTextStyle(fontSize(bodySize, textScale), clampLines)}
+        >
+          {translation.translatedText}
+        </p>
+      ) : (
+        <div className="flex min-h-[72px] flex-1 flex-col justify-center">
+          <p className={cn('text-[11px] font-black uppercase tracking-[0.18em]', bodyTone)}>
+            {languageState.message || '未生成译文'}
+          </p>
+        </div>
+      )}
+    </article>
+  );
+}
+
+function LanguagePill({
+  languageState,
+  settings,
+  textScale,
+}: {
+  languageState: DesktopCaptionLanguageState;
+  settings: CaptionOverlaySettings;
+  textScale: number;
+}) {
+  return (
+    <div className="flex shrink-0 items-center">
+      <span
+        className={cn(
+          'inline-flex max-w-full items-center rounded-full border px-3 py-1 font-black',
+          languagePillTone(languageState.status),
+        )}
+        style={{ fontSize: fontSize(settings.fullscreen ? 14 : 11, textScale) }}
+      >
+        <span className="truncate">{languageState.label}</span>
+      </span>
+    </div>
+  );
+}
+
+function MultilingualColumnDisplay({
+  lines,
+  settings,
+  textScale,
+  languageStates,
+}: {
+  lines: DesktopCaptionLine[];
+  settings: CaptionOverlaySettings;
+  textScale: number;
+  languageStates: DesktopCaptionLanguageState[];
+}) {
+  const visibleLineCount = Math.max(1, settings.scrollMode ? settings.visibleLineCount : 1);
+  const visibleRows = lines.slice(-visibleLineCount);
+  const latestSequence = visibleRows[visibleRows.length - 1]?.sequence;
+  const columns = settings.showTranslation ? languageStates : [];
+
+  if (columns.length === 0) {
+    return <OriginalOnlyDisplay lines={lines} settings={settings} textScale={textScale} />;
+  }
+
+  return (
+    <div className={cn('min-h-0 flex-1 overflow-hidden', settings.fullscreen ? 'px-[4.5vw] pb-[12vh]' : 'px-5 pb-4')}>
+      <div className={cn('flex h-full min-h-0 flex-col', settings.scrollMode ? 'justify-end' : 'justify-center', settings.fullscreen ? 'gap-5' : 'gap-3')}>
+        <div
+          className={cn('grid min-h-0 flex-1', settings.fullscreen ? 'gap-3' : 'gap-2.5')}
+          style={{ gridTemplateColumns: `repeat(${columns.length}, minmax(0, 1fr))` }}
+        >
+          {columns.map((languageState) => (
+            <section key={languageState.targetLanguage} className={cn('flex min-h-0 flex-col', settings.fullscreen ? 'gap-3' : 'gap-2.5')}>
+              <LanguagePill
+                languageState={languageState}
+                settings={settings}
+                textScale={textScale}
+              />
+              <div className="min-h-0 flex-1 overflow-hidden">
+                <div className={cn('flex h-full flex-col', settings.scrollMode ? 'justify-end' : 'justify-center', settings.fullscreen ? 'gap-3' : 'gap-2.5')}>
+                  {visibleRows.map((line, rowIndex) => {
+                    const active = rowIndex === visibleRows.length - 1;
+                    return (
+                      <div key={`${languageState.targetLanguage}-${line.id}`} className="min-h-0">
+                        <LanguageCell
+                          line={line}
+                          languageState={languageState}
+                          settings={settings}
+                          textScale={textScale}
+                          active={active && line.sequence === latestSequence}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </section>
+          ))}
+        </div>
+
+        {settings.showOriginal && latestSequence && (
+          <div className={cn('shrink-0 rounded-lg border border-white/8 bg-black/12', settings.fullscreen ? 'px-5 py-4' : 'px-3 py-2')}>
+            <p
+              className="leading-relaxed text-white/72"
+              style={clampTextStyle(fontSize(settings.fullscreen ? 30 : 13, textScale), settings.fullscreen ? 3 : 2)}
+            >
+              {visibleRows[visibleRows.length - 1]?.originalText}
+            </p>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -235,28 +372,55 @@ export function CaptionOverlayApp() {
   const [settings, setSettings] = useState<CaptionOverlaySettings>(DEFAULT_OVERLAY_SETTINGS);
   const [streamState, setStreamState] = useState<CaptionStreamState>(DEFAULT_CAPTION_STATE);
   const [lines, setLines] = useState<DesktopCaptionLine[]>([]);
+  const [languageStates, setLanguageStates] = useState<DesktopCaptionLanguageState[]>([]);
   const activeLine = lines[lines.length - 1];
   const textScale = useWindowScale(settings, streamState);
+  const sessionKey = `${streamState.startedAt ?? 'idle'}:${streamState.running ? 'running' : 'idle'}`;
+  const previousSessionKeyRef = useRef(sessionKey);
 
   useEffect(() => {
     const api = window.knowlyDesktop;
     if (!api) return;
 
     void api.getOverlaySettings().then(setSettings);
-    void api.getCaptionStreamState().then(setStreamState);
+    void api.getCaptionStreamState().then((state) => {
+      setStreamState(state);
+      setLanguageStates(state.languageStates ?? []);
+    });
 
     const removeLineListener = api.onCaptionLine((line) => {
-      setLines((current) => [...current, line].slice(-18));
+      setLines((current) => [...current, line].slice(-24));
     });
-    const removeStateListener = api.onCaptionState(setStreamState);
+    const removeStateListener = api.onCaptionState((state) => {
+      setStreamState(state);
+      if (state.languageStates?.length) setLanguageStates(state.languageStates);
+    });
+    const removeLanguageStateListener = api.onCaptionLanguageStates(setLanguageStates);
     const removeSettingsListener = api.onOverlaySettings(setSettings);
 
     return () => {
       removeLineListener();
       removeStateListener();
+      removeLanguageStateListener();
       removeSettingsListener();
     };
   }, []);
+
+  useEffect(() => {
+    if (previousSessionKeyRef.current === sessionKey) return;
+    previousSessionKeyRef.current = sessionKey;
+
+    if (streamState.running) {
+      setLines([]);
+      setLanguageStates(streamState.languageStates?.length ? streamState.languageStates : resolveLanguageStates(streamState));
+      return;
+    }
+
+    setLines([]);
+    setLanguageStates(streamState.languageStates ?? []);
+  }, [sessionKey, streamState]);
+
+  const resolvedLanguageStates = useMemo(() => resolveLanguageStates(streamState), [streamState]);
 
   const stateLabel = useMemo(() => {
     if (!streamState.running) return '待开始';
@@ -268,16 +432,25 @@ export function CaptionOverlayApp() {
     const api = window.knowlyDesktop;
     if (!api || !streamState.running) return;
     if (streamState.paused) {
-      void api.resumeCaptionMockStream().then(setStreamState);
+      void api.resumeCaptionMockStream().then((state) => {
+        setStreamState(state);
+        if (state.languageStates?.length) setLanguageStates(state.languageStates);
+      });
       return;
     }
-    void api.pauseCaptionMockStream().then(setStreamState);
+    void api.pauseCaptionMockStream().then((state) => {
+      setStreamState(state);
+      if (state.languageStates?.length) setLanguageStates(state.languageStates);
+    });
   }
 
   function stopCaptionStream() {
     const api = window.knowlyDesktop;
     if (!api) return;
-    void api.stopCaptionMockStream().then(setStreamState);
+    void api.stopCaptionMockStream().then((state) => {
+      setStreamState(state);
+      if (state.languageStates?.length) setLanguageStates(state.languageStates);
+    });
   }
 
   function toggleFullscreen() {
@@ -324,12 +497,17 @@ export function CaptionOverlayApp() {
           </div>
         </header>
 
-        {activeLine ? (
-          settings.scrollMode
-            ? <ScrollingCaptionDisplay lines={lines} settings={settings} textScale={textScale} />
-            : <CaptionDisplay line={activeLine} settings={settings} textScale={textScale} />
-        ) : (
+        {!activeLine ? (
           <EmptyCaption textScale={textScale} />
+        ) : settings.showTranslation ? (
+          <MultilingualColumnDisplay
+            lines={lines}
+            settings={settings}
+            textScale={textScale}
+            languageStates={languageStates.length > 0 ? languageStates : resolvedLanguageStates}
+          />
+        ) : (
+          <OriginalOnlyDisplay lines={lines} settings={settings} textScale={textScale} />
         )}
       </section>
     </div>

@@ -3,10 +3,13 @@ import path from 'node:path';
 import { SIMULTANEOUS_CAPTIONS } from '../../src/data/mockData';
 import {
   activeDesktopTargetLanguages,
+  buildDesktopCaptionLanguageStates,
   buildDesktopCaptionTranslations,
   DESKTOP_IPC,
   type CaptionOverlaySettings,
   type CaptionStreamState,
+  type DesktopActiveTargetLanguage,
+  type DesktopCaptionLanguageState,
   type DesktopCaptionLine,
   type StartCaptionStreamOptions,
 } from '../shared/desktopApi';
@@ -17,8 +20,7 @@ const OVERLAY_WIDTH = 430;
 const OVERLAY_HEIGHT = 270;
 const OVERLAY_SCROLL_MIN_HEIGHT = 430;
 const OVERLAY_SCROLL_LINE_HEIGHT = 18;
-const OVERLAY_LANGUAGE_HEIGHT_STEP = 112;
-const OVERLAY_SCROLL_LANGUAGE_HEIGHT_STEP = 150;
+const OVERLAY_COLUMN_WIDTH = 330;
 const OVERLAY_MARGIN = 22;
 
 let mainWindow: BrowserWindow | null = null;
@@ -86,6 +88,7 @@ function broadcastOverlaySettings() {
 
 function broadcastCaptionState() {
   broadcast(DESKTOP_IPC.captionsStateChanged, captionState);
+  broadcast(DESKTOP_IPC.captionsLanguageStatesChanged, captionState.languageStates ?? []);
 }
 
 function attachExternalLinkGuard(window: BrowserWindow) {
@@ -129,11 +132,19 @@ function overlayLanguageCount() {
 }
 
 function overlayHeight() {
-  const extraLanguageCount = overlayLanguageCount() - 1;
-  if (!overlaySettings.scrollMode) return OVERLAY_HEIGHT + extraLanguageCount * OVERLAY_LANGUAGE_HEIGHT_STEP;
+  if (!overlaySettings.scrollMode) return OVERLAY_HEIGHT;
   return OVERLAY_SCROLL_MIN_HEIGHT
-    + (overlaySettings.visibleLineCount - 5) * OVERLAY_SCROLL_LINE_HEIGHT
-    + extraLanguageCount * OVERLAY_SCROLL_LANGUAGE_HEIGHT_STEP;
+    + (overlaySettings.visibleLineCount - 5) * OVERLAY_SCROLL_LINE_HEIGHT;
+}
+
+function overlayWidth() {
+  const languageCount = overlaySettings.showTranslation ? overlayLanguageCount() : 1;
+  return OVERLAY_WIDTH + Math.max(0, languageCount - 1) * OVERLAY_COLUMN_WIDTH;
+}
+
+function constrainedOverlayWidth() {
+  const { workArea } = screen.getPrimaryDisplay();
+  return Math.min(overlayWidth(), workArea.width - OVERLAY_MARGIN * 2);
 }
 
 function constrainedOverlayHeight() {
@@ -144,7 +155,7 @@ function constrainedOverlayHeight() {
 function defaultOverlayBounds() {
   const { workArea } = screen.getPrimaryDisplay();
   const height = constrainedOverlayHeight();
-  const width = OVERLAY_WIDTH;
+  const width = constrainedOverlayWidth();
   return {
     x: workArea.x + workArea.width - width - OVERLAY_MARGIN,
     y: workArea.y + Math.round((workArea.height - height) * 0.24),
@@ -163,11 +174,7 @@ function resizeOverlayForMode() {
   if (!overlayWindow || overlayWindow.isDestroyed()) return;
   if (overlayWindow.isFullScreen()) return;
 
-  const currentBounds = overlayWindow.getBounds();
-  overlayWindow.setBounds({
-    ...currentBounds,
-    height: constrainedOverlayHeight(),
-  });
+  overlayWindow.setBounds(defaultOverlayBounds());
 }
 
 function createOverlayWindow() {
@@ -234,6 +241,7 @@ function hideOverlay() {
 function setOverlaySettings(settings: Partial<CaptionOverlaySettings>) {
   const previousScrollMode = overlaySettings.scrollMode;
   const previousVisibleLineCount = overlaySettings.visibleLineCount;
+  const previousShowTranslation = overlaySettings.showTranslation;
   overlaySettings = {
     ...overlaySettings,
     ...settings,
@@ -247,6 +255,7 @@ function setOverlaySettings(settings: Partial<CaptionOverlaySettings>) {
     if (
       previousScrollMode !== overlaySettings.scrollMode
       || previousVisibleLineCount !== overlaySettings.visibleLineCount
+      || previousShowTranslation !== overlaySettings.showTranslation
     ) {
       resizeOverlayForMode();
     }
@@ -285,6 +294,30 @@ function formatElapsed(seconds: number) {
   return `${minutes.toString().padStart(2, '0')}:${rest.toString().padStart(2, '0')}`;
 }
 
+function advanceCaptionLanguageStates(
+  targetLanguages: DesktopActiveTargetLanguage[],
+  sequence: number,
+  currentStates: DesktopCaptionLanguageState[] | undefined,
+) {
+  const updatedAt = new Date().toISOString();
+  const currentByLanguage = new Map((currentStates ?? []).map((state) => [state.targetLanguage, state] as const));
+
+  return targetLanguages.map((targetLanguage) => {
+    const current = currentByLanguage.get(targetLanguage);
+    if (current?.status === 'error' || current?.status === 'reconnecting') {
+      return { ...current, updatedAt };
+    }
+
+    return {
+      targetLanguage,
+      label: current?.label ?? buildDesktopCaptionLanguageStates([targetLanguage])[0]?.label ?? targetLanguage,
+      status: 'live' as const,
+      lastSequence: sequence,
+      updatedAt,
+    };
+  });
+}
+
 function nextCaptionLine(): DesktopCaptionLine {
   const caption = SIMULTANEOUS_CAPTIONS[captionCursor % SIMULTANEOUS_CAPTIONS.length];
   const sequence = captionCursor + 1;
@@ -309,9 +342,11 @@ function publishCaptionLine() {
   if (!captionState.running || captionState.paused) return;
 
   const line = nextCaptionLine();
+  const targetLanguages = activeDesktopTargetLanguages(captionState.targetLanguages, captionState.targetLanguage);
   captionState = {
     ...captionState,
     lineCount: line.sequence,
+    languageStates: advanceCaptionLanguageStates(targetLanguages, line.sequence, captionState.languageStates),
   };
   broadcast(DESKTOP_IPC.captionsLine, line);
   broadcastCaptionState();
@@ -341,6 +376,7 @@ function startCaptionStream(options: StartCaptionStreamOptions) {
     paused: false,
     lineCount: 0,
     startedAt: new Date().toISOString(),
+    languageStates: buildDesktopCaptionLanguageStates(targetLanguages, activeTargetLanguages[0] ?? 'zh', 'connecting', '正在连接字幕通道'),
   };
   showOverlay();
   resizeOverlayForMode();
@@ -351,14 +387,31 @@ function startCaptionStream(options: StartCaptionStreamOptions) {
 
 function pauseCaptionStream() {
   if (!captionState.running) return captionState;
-  captionState = { ...captionState, paused: true };
+  captionState = {
+    ...captionState,
+    paused: true,
+    languageStates: captionState.languageStates?.map((state) => ({
+      ...state,
+      message: '已暂停',
+      updatedAt: new Date().toISOString(),
+    })),
+  };
   broadcastCaptionState();
   return captionState;
 }
 
 function resumeCaptionStream() {
   if (!captionState.running) return captionState;
-  captionState = { ...captionState, paused: false };
+  captionState = {
+    ...captionState,
+    paused: false,
+    languageStates: captionState.languageStates?.map((state) => ({
+      ...state,
+      status: state.status === 'connecting' ? 'live' : state.status,
+      message: state.status === 'live' || state.status === 'connecting' ? undefined : state.message,
+      updatedAt: new Date().toISOString(),
+    })),
+  };
   broadcastCaptionState();
   return captionState;
 }
@@ -370,6 +423,11 @@ function stopCaptionStream() {
     running: false,
     paused: false,
     startedAt: undefined,
+    languageStates: captionState.languageStates?.map((state) => ({
+      ...state,
+      message: '已停止',
+      updatedAt: new Date().toISOString(),
+    })),
   };
   hideOverlay();
   broadcastCaptionState();

@@ -1,5 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import { DESKTOP_IPC, type CaptionOverlaySettings, type CaptionStreamState, type DesktopCaptionLine, type KnowlyDesktopApi, type StartCaptionStreamOptions } from '../shared/desktopApi';
+import {
+  DESKTOP_IPC,
+  type CaptionOverlaySettings,
+  type CaptionStreamState,
+  type DesktopCaptionLanguageState,
+  type DesktopCaptionLine,
+  type KnowlyDesktopApi,
+  type StartCaptionStreamOptions,
+} from '../shared/desktopApi';
 
 function subscribe<T>(channel: string, callback: (payload: T) => void) {
   const listener = (_event: Electron.IpcRendererEvent, payload: T) => callback(payload);
@@ -21,6 +29,7 @@ const api: KnowlyDesktopApi = {
   getCaptionStreamState: () => ipcRenderer.invoke(DESKTOP_IPC.captionsStateGet),
   onCaptionLine: (callback: (line: DesktopCaptionLine) => void) => subscribe(DESKTOP_IPC.captionsLine, callback),
   onCaptionState: (callback: (state: CaptionStreamState) => void) => subscribe(DESKTOP_IPC.captionsStateChanged, callback),
+  onCaptionLanguageStates: (callback: (states: DesktopCaptionLanguageState[]) => void) => subscribe(DESKTOP_IPC.captionsLanguageStatesChanged, callback),
   onOverlaySettings: (callback: (settings: CaptionOverlaySettings) => void) => subscribe(DESKTOP_IPC.overlaySettingsChanged, callback),
 };
 
