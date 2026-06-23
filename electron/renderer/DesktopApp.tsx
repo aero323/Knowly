@@ -21,8 +21,10 @@ import {
   Languages,
   Link2,
   Loader2,
+  Lock,
   LogIn,
   LogOut,
+  Mail,
   Maximize2,
   MessageSquareText,
   Mic,
@@ -101,6 +103,7 @@ interface DesktopCustomScene {
 interface DesktopMockUser {
   id: string;
   phone: string;
+  email?: string;
   name: string;
   company: string;
   plan: DesktopAccountPlan;
@@ -320,7 +323,6 @@ const DESKTOP_AUTH_USER_KEY = 'knowly.desktop.mockUser.v1';
 const REFERENCE_FILE_LIMIT_BYTES = 5 * 1024 * 1024;
 const REFERENCE_FILE_EXTENSIONS = ['txt', 'docx', 'pdf', 'xlsx'] as const;
 const DEFAULT_CUSTOM_SCENE_PROMPT = '请根据当前业务场景调整翻译：优先保留关键专有名词、金额、时间、单据名称和责任方；语气保持清楚、礼貌、可直接用于商务沟通。';
-const MOCK_SMS_CODE = '2026';
 
 const DEFAULT_TRANSLATION_PREFERENCES: DesktopTranslationPreferences = {
   sourceLanguage: 'auto',
@@ -377,11 +379,14 @@ function maskPhoneNumber(phone: string) {
   return `${digits.slice(0, 3)}****${digits.slice(-4)}`;
 }
 
-function makeDesktopMockUser(plan: DesktopAccountPlan, phone: string): DesktopMockUser {
-  const normalizedPhone = phone.replace(/\D/g, '');
+function makeDesktopMockUser(plan: DesktopAccountPlan, account: string): DesktopMockUser {
+  const normalizedAccount = account.trim();
+  const isEmail = normalizedAccount.includes('@');
+  const normalizedPhone = normalizedAccount.replace(/\D/g, '');
   return {
-    id: `desktop-mock-${plan}-${normalizedPhone || Date.now()}`,
-    phone: normalizedPhone || phone,
+    id: `desktop-mock-${plan}-${isEmail ? normalizedAccount.toLowerCase() : normalizedPhone || Date.now()}`,
+    phone: isEmail ? '' : normalizedPhone || normalizedAccount,
+    email: isEmail ? normalizedAccount.toLowerCase() : undefined,
     name: plan === 'enterprise' ? '企业管理员' : '未付费用户',
     company: plan === 'enterprise' ? 'Knowly 企业测试账号' : '待开通企业账号',
     plan,
@@ -391,10 +396,11 @@ function makeDesktopMockUser(plan: DesktopAccountPlan, phone: string): DesktopMo
 
 function readDesktopMockUser() {
   const stored = readStoredValue<Partial<DesktopMockUser> | null>(DESKTOP_AUTH_USER_KEY, null);
-  if (!stored?.phone) return null;
+  if (!stored?.phone && !stored?.email) return null;
   return {
-    id: stored.id ?? `desktop-mock-${stored.phone}`,
-    phone: stored.phone,
+    id: stored.id ?? `desktop-mock-${stored.email ?? stored.phone}`,
+    phone: stored.phone ?? '',
+    email: stored.email,
     name: stored.name ?? '未付费用户',
     company: stored.company ?? '待开通企业账号',
     plan: stored.plan === 'enterprise' ? 'enterprise' : 'free',
@@ -711,34 +717,19 @@ function DeveloperNoteBadge({ note }: { note: string }) {
 }
 
 function DesktopLoginScreen({ onLogin }: { onLogin: (user: DesktopMockUser) => void }) {
-  const [phone, setPhone] = useState('');
-  const [smsCode, setSmsCode] = useState('');
-  const [codeSent, setCodeSent] = useState(false);
-  const [smsError, setSmsError] = useState('');
-  const normalizedPhone = phone.replace(/\D/g, '');
-  const phoneReady = normalizedPhone.length >= 11;
-  const canSubmit = phoneReady && smsCode.trim().length >= 4;
-
-  function sendSmsCode() {
-    if (!phoneReady) {
-      setSmsError('请输入 11 位手机号码');
-      return;
-    }
-    setCodeSent(true);
-    setSmsCode(MOCK_SMS_CODE);
-    setSmsError('');
-  }
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [loginError, setLoginError] = useState('');
+  const normalizedEmail = email.trim().toLowerCase();
+  const emailReady = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail);
+  const canSubmit = emailReady && password.trim().length >= 6;
 
   function submitLogin() {
     if (!canSubmit) {
-      setSmsError('请输入手机号码和短信验证码');
+      setLoginError('请输入正确的邮箱和至少 6 位密码');
       return;
-	    }
-	    if (smsCode.trim() !== MOCK_SMS_CODE) {
-	      setSmsError(`演示验证码为 ${MOCK_SMS_CODE}`);
-	      return;
-	    }
-    onLogin(makeDesktopMockUser('free', normalizedPhone));
+    }
+    onLogin(makeDesktopMockUser('free', normalizedEmail));
   }
 
   return (
@@ -750,7 +741,7 @@ function DesktopLoginScreen({ onLogin }: { onLogin: (user: DesktopMockUser) => v
               <img src={knowlyLogoUrl} alt="Knowly" className="h-12 w-12 rounded-lg bg-white object-contain p-1" />
 	              <div>
 	                <p className="text-base font-black">懂译Knowly</p>
-	                <p className="mt-0.5 text-xs font-semibold text-white/55">桌面端实时字幕同传</p>
+	                <p className="mt-0.5 text-xs font-semibold text-white/55">AI Multilingual Workspace</p>
 	              </div>
 	            </div>
 
@@ -776,57 +767,50 @@ function DesktopLoginScreen({ onLogin }: { onLogin: (user: DesktopMockUser) => v
         <div className="flex flex-col justify-center p-8">
 	          <div>
 	            <p className="text-xs font-black uppercase tracking-[0.18em] text-slate-400">Sign in</p>
-	            <h2 className="mt-3 text-2xl font-black text-slate-950">手机号注册 / 登录</h2>
-	            <p className="mt-2 text-sm leading-6 text-slate-500">使用手机号接收验证码，登录后进入桌面端字幕同传工作台。</p>
+	            <h2 className="mt-3 text-2xl font-black text-slate-950">请使用Knowly移动端APP账号登录</h2>
+	            <p className="mt-2 text-sm leading-6 text-slate-500">输入移动端 APP 账号绑定的邮箱和密码，登录后进入桌面端字幕同传工作台。</p>
 	          </div>
 
           <div className="mt-8 space-y-4">
             <label className="block">
-              <span className="mb-2 block text-xs font-bold text-slate-500">手机号码</span>
+              <span className="mb-2 block text-xs font-bold text-slate-500">邮箱</span>
               <div className="flex h-12 items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 focus-within:border-blue-300 focus-within:bg-white focus-within:ring-2 focus-within:ring-blue-100">
-                <Smartphone className="h-4 w-4 shrink-0 text-slate-400" />
+                <Mail className="h-4 w-4 shrink-0 text-slate-400" />
                 <input
-                  value={phone}
+                  value={email}
                   onChange={(event) => {
-                    setPhone(event.target.value.replace(/[^\d\s-]/g, ''));
-                    setSmsError('');
+                    setEmail(event.target.value);
+                    setLoginError('');
                   }}
-                  placeholder="138 0000 0000"
-                  inputMode="tel"
+                  placeholder="name@company.com"
+                  inputMode="email"
+                  autoComplete="email"
                   className="min-w-0 flex-1 bg-transparent text-sm font-bold text-slate-950 outline-none placeholder:text-slate-400"
                 />
               </div>
             </label>
 
             <label className="block">
-              <span className="mb-2 block text-xs font-bold text-slate-500">短信验证码</span>
-              <div className="flex gap-2">
+              <span className="mb-2 block text-xs font-bold text-slate-500">密码</span>
+              <div className="flex h-12 items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 focus-within:border-blue-300 focus-within:bg-white focus-within:ring-2 focus-within:ring-blue-100">
+                <Lock className="h-4 w-4 shrink-0 text-slate-400" />
                 <input
-                  value={smsCode}
+                  value={password}
                   onChange={(event) => {
-                    setSmsCode(event.target.value.replace(/\D/g, '').slice(0, 6));
-                    setSmsError('');
+                    setPassword(event.target.value);
+                    setLoginError('');
                   }}
-                  placeholder="2026"
-                  inputMode="numeric"
-                  className="h-12 min-w-0 flex-1 rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm font-bold tracking-widest text-slate-950 outline-none placeholder:tracking-normal placeholder:text-slate-400 focus:border-blue-300 focus:bg-white focus:ring-2 focus:ring-blue-100"
+                  placeholder="请输入密码"
+                  type="password"
+                  autoComplete="current-password"
+                  className="min-w-0 flex-1 bg-transparent text-sm font-bold text-slate-950 outline-none placeholder:text-slate-400"
                 />
-                <button
-                  type="button"
-                  onClick={sendSmsCode}
-                  className="h-12 shrink-0 rounded-lg border border-slate-200 bg-white px-3 text-xs font-black text-blue-700 transition hover:border-blue-200 hover:bg-blue-50 active:scale-[0.98]"
-                >
-                  {codeSent ? '重新获取' : '获取验证码'}
-                </button>
               </div>
             </label>
 
-            {smsError && (
-              <p className="rounded-lg bg-red-50 px-3 py-2 text-xs font-semibold leading-5 text-red-700">{smsError}</p>
+            {loginError && (
+              <p className="rounded-lg bg-red-50 px-3 py-2 text-xs font-semibold leading-5 text-red-700">{loginError}</p>
             )}
-	            {codeSent && !smsError && (
-	              <p className="rounded-lg bg-blue-50 px-3 py-2 text-xs font-semibold leading-5 text-blue-700">验证码已发送，本次演示验证码为 {MOCK_SMS_CODE}</p>
-	            )}
 
             <button
               type="button"
@@ -835,7 +819,7 @@ function DesktopLoginScreen({ onLogin }: { onLogin: (user: DesktopMockUser) => v
               className="flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-slate-950 text-sm font-black text-white transition hover:bg-slate-800 active:scale-[0.99] disabled:bg-slate-200 disabled:text-slate-400"
             >
               <LogIn className="h-4 w-4" />
-              登录 / 注册
+              登录
             </button>
           </div>
 
@@ -922,7 +906,7 @@ function Sidebar({
             <div className="absolute bottom-full left-0 right-0 z-50 mb-2 rounded-lg border border-slate-200 bg-white p-1.5 shadow-xl shadow-slate-900/12">
               <button type="button" onClick={() => setAccountMenuOpen(false)} className="flex h-10 w-full items-center gap-2 rounded-md px-2.5 text-left text-xs font-bold text-slate-800 transition hover:bg-slate-50">
                 <UserRound className="h-4 w-4 text-slate-600" />
-                {maskPhoneNumber(currentUser.phone)}
+                {currentUser.email ?? maskPhoneNumber(currentUser.phone)}
               </button>
               <button type="button" className="flex h-10 w-full items-center gap-2 rounded-md px-2.5 text-left text-xs font-bold text-slate-800 transition hover:bg-slate-50">
                 <Handshake className="h-4 w-4 text-emerald-600" />
