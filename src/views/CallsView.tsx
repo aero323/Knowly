@@ -1,4 +1,4 @@
-import { ArrowRight, CheckCircle2, ChevronDown, Copy, History, Pencil, Phone, UserPlus, Video, X } from 'lucide-react';
+import { ArrowRight, ChevronDown, Copy, Phone, Video } from 'lucide-react';
 import { motion } from 'motion/react';
 import { useState } from 'react';
 import { ScreenHeader } from '@/components/ScreenHeader';
@@ -17,10 +17,10 @@ const CONTACT_HISTORY = {
       id: 'new-contact-session-1',
       title: '首次接通确认',
       time: '刚刚',
-      summary: '已确认对方可正常接听，后续沟通将通过 Knowly 发起。',
+      summary: '已确认对方可正常接入，后续沟通可通过会议 ID 加入。',
       transcript: [
-        { speaker: '我', source: '你好，先试一下这个新联系人能不能接通。', translated: 'Halo, saya ingin mencoba apakah kontak baru ini bisa tersambung.' },
-        { speaker: '新联系人', source: '可以，我这边已经收到。', translated: 'Bisa, saya sudah menerima panggilannya.' },
+        { speaker: '我', source: '你好，先试一下这次通话能不能接通。', translated: 'Halo, saya ingin mencoba apakah panggilan ini bisa tersambung.' },
+        { speaker: '对方', source: '可以，我这边已经收到。', translated: 'Bisa, saya sudah menerima panggilannya.' },
       ],
     },
   ],
@@ -118,102 +118,30 @@ export function CallsView({ onOpenScreen, onOpenEnterpriseSubscription }: CallsV
   const [inviteCode] = useState('7A3-K9W');
   const [joinCode, setJoinCode] = useState('');
   const [copied, setCopied] = useState(false);
-  const [isAddContactOpen, setIsAddContactOpen] = useState(false);
   const [applyGuestPreferences, setApplyGuestPreferences] = useState(true);
-  const [contactIdInput, setContactIdInput] = useState('');
-  const [addedContacts, setAddedContacts] = useState<typeof CONTACTS>([]);
-  const [addedContactId, setAddedContactId] = useState('');
-  const [contactNameOverrides, setContactNameOverrides] = useState<Record<string, string>>({});
-  const [editingContactId, setEditingContactId] = useState('');
-  const [editingContactName, setEditingContactName] = useState('');
-  const [pendingCallContactId, setPendingCallContactId] = useState('');
-  const [historyContactId, setHistoryContactId] = useState('');
-  const [isAllContactsOpen, setIsAllContactsOpen] = useState(false);
-  const [expandedHistoryId, setExpandedHistoryId] = useState('');
+  const [selectedHistoryId, setSelectedHistoryId] = useState('');
   const [editingHistoryKey, setEditingHistoryKey] = useState('');
   const [historyTranslationDraft, setHistoryTranslationDraft] = useState('');
   const [historyCorrections, setHistoryCorrections] = useState<Record<string, string>>({});
   const [rememberedHistoryKey, setRememberedHistoryKey] = useState('');
-  const displayedContacts = [...addedContacts, ...CONTACTS.filter((contact) => !addedContacts.some((item) => item.id === contact.id))]
-    .map((contact) => ({ ...contact, name: contactNameOverrides[contact.id] ?? contact.name }));
-  const pendingCallContact = displayedContacts.find((contact) => contact.id === pendingCallContactId) ?? null;
-  const historyContact = displayedContacts.find((contact) => contact.id === historyContactId) ?? null;
-  const historySessions = historyContact ? (CONTACT_HISTORY[historyContact.id] ?? []) : [];
 
-  function getContactMeta(contact: (typeof CONTACTS)[number]) {
-    if (contact.source === 'web') return `网页通话 · ${contact.lastCall}`;
-    return `ID ${contact.contactCode} · ${contact.lastCall}`;
-  }
+  const callHistoryRecords = CONTACTS.flatMap((participant) => (CONTACT_HISTORY[participant.id] ?? []).map((session) => ({
+    ...session,
+    participantId: participant.id,
+    participantName: participant.id === 'new-contact' ? 'Rizky' : participant.source === 'web' ? '网页用户' : participant.name,
+    channel: participant.source === 'web' ? '网页通话' : 'Knowly App',
+  })));
+  const selectedHistory = callHistoryRecords.find((record) => record.id === selectedHistoryId) ?? null;
 
-  function renderContactInfo(contact: (typeof CONTACTS)[number]) {
-    return (
-      <>
-        <span className="relative">
-          <span className="w-12 h-12 bg-blue-100 text-blue-700 rounded-full flex items-center justify-center font-bold text-lg">
-            {contact.name.charAt(0).toUpperCase()}
-          </span>
-          {contact.online && <span className="absolute -bottom-0.5 -right-0.5 w-3 h-3 bg-emerald-500 border-2 border-white rounded-full" />}
-        </span>
-        <span className="flex-1">
-          <span className="block font-semibold text-gray-950">{contact.name}</span>
-          <span className="block text-xs text-gray-500 mt-0.5">{getContactMeta(contact)}</span>
-        </span>
-      </>
-    );
-  }
-
-  function autoAddContact() {
-    const contactCode = contactIdInput.trim().toUpperCase();
-    if (!contactCode) return;
-
-    const contact = {
-      id: `added-${contactCode}`,
-      name: '新联系人',
-      lastCall: '刚刚添加',
-      online: true,
-      contactCode,
-      source: 'app',
-    };
-    setAddedContacts((current) => [contact, ...current.filter((item) => item.id !== contact.id)]);
-    setAddedContactId(contact.id);
-  }
-
-  function hasHistory(contact: (typeof displayedContacts)[number]) {
-    return Boolean(CONTACT_HISTORY[contact.id]?.length);
-  }
-
-  function openEditContact(contact: (typeof displayedContacts)[number]) {
-    setEditingContactId(contact.id);
-    setEditingContactName(contact.name);
-  }
-
-  function saveContactName() {
-    const nextName = editingContactName.trim();
-    if (!editingContactId || !nextName) return;
-
-    setContactNameOverrides((current) => ({ ...current, [editingContactId]: nextName }));
-    setAddedContacts((current) => current.map((contact) => contact.id === editingContactId ? { ...contact, name: nextName } : contact));
-    setEditingContactId('');
-    setEditingContactName('');
-  }
-
-  function startContactCall(contact: (typeof displayedContacts)[number], mode: 'voice' | 'video') {
-    onOpenScreen({ type: 'call-lobby', mode, contactId: contact.id, code: inviteCode });
-    setPendingCallContactId('');
-  }
-
-  function openContactHistory(contact: (typeof displayedContacts)[number]) {
-    const sessions = CONTACT_HISTORY[contact.id] ?? [];
-    setHistoryContactId(contact.id);
-    setExpandedHistoryId(sessions[0]?.id ?? '');
+  function openCallHistory(record: (typeof callHistoryRecords)[number]) {
+    setSelectedHistoryId(record.id);
     setEditingHistoryKey('');
     setHistoryTranslationDraft('');
     setRememberedHistoryKey('');
   }
 
-  function closeContactHistory() {
-    setHistoryContactId('');
-    setExpandedHistoryId('');
+  function closeCallHistory() {
+    setSelectedHistoryId('');
     setEditingHistoryKey('');
     setHistoryTranslationDraft('');
     setRememberedHistoryKey('');
@@ -246,168 +174,95 @@ export function CallsView({ onOpenScreen, onOpenEnterpriseSubscription }: CallsV
     window.setTimeout(() => setRememberedHistoryKey((current) => current === key ? '' : current), 1600);
   }
 
-  function renderContactList(contacts: typeof displayedContacts) {
+  function renderCallHistoryList(records: typeof callHistoryRecords) {
     return (
       <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
-        {contacts.map((contact, i) => (
-          <div key={contact.id} className={cn('flex items-center gap-3 p-4', i !== contacts.length - 1 && 'border-b border-gray-100')}>
-            <div className="flex min-h-12 flex-1 items-center gap-3 text-left">
-              <span className="relative">
-                <span className="flex h-12 w-12 items-center justify-center rounded-full bg-blue-100 text-lg font-bold text-blue-700">
-                  {contact.name.charAt(0).toUpperCase()}
+        {records.map((record, i) => (
+          <button
+            key={record.id}
+            type="button"
+            onClick={() => openCallHistory(record)}
+            className={cn('flex min-h-24 w-full items-start p-4 text-left transition-colors active:bg-gray-50', i !== records.length - 1 && 'border-b border-gray-100')}
+          >
+            <span className="min-w-0 flex-1">
+              <span className="flex items-start justify-between gap-3">
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-semibold text-gray-950">{record.title}</span>
+                  <span className="mt-1 block text-xs text-gray-500">{record.participantName} · {record.channel} · {record.time}</span>
                 </span>
-                {contact.online && <span className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-white bg-emerald-500" />}
+                <ChevronDown className="-rotate-90 mt-0.5 h-4 w-4 shrink-0 text-gray-400" />
               </span>
-              <span className="min-w-0 flex-1">
-                <span className="flex items-center gap-1.5">
-                  <span className="block truncate font-semibold text-gray-950">{contact.name}</span>
-                  <button
-                    type="button"
-                    onClick={() => openEditContact(contact)}
-                    className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-blue-50 hover:text-blue-600"
-                    aria-label={`编辑 ${contact.name}`}
-                  >
-                    <Pencil className="h-3.5 w-3.5" />
-                  </button>
-                </span>
-                <span className="mt-0.5 block text-xs text-gray-500">{getContactMeta(contact)}</span>
-              </span>
-            </div>
-
-            <div className="flex shrink-0 items-center gap-1.5">
-              {hasHistory(contact) && (
-                <button
-                  type="button"
-                  onClick={() => openContactHistory(contact)}
-                  className="flex h-10 w-10 items-center justify-center rounded-full bg-gray-50 text-gray-500 transition-colors hover:bg-blue-50 hover:text-blue-600"
-                  aria-label={`${contact.name} 的通话历史`}
-                >
-                  <History className="h-4 w-4" />
-                </button>
-              )}
-              {contact.source !== 'web' && (
-                <button
-                  type="button"
-                  onClick={() => setPendingCallContactId(contact.id)}
-                  className="flex h-10 w-10 items-center justify-center rounded-full bg-gray-50 text-gray-500 transition-colors hover:bg-blue-50 hover:text-blue-600"
-                  aria-label={`呼叫 ${contact.name}`}
-                >
-                  <Phone className="h-4 w-4" />
-                </button>
-              )}
-            </div>
-          </div>
+              <span className="mt-2 block text-sm leading-6 text-gray-600">{record.summary}</span>
+            </span>
+          </button>
         ))}
       </div>
     );
   }
 
-  if (historyContact) {
+  if (selectedHistory) {
     return (
       <motion.div initial={{ opacity: 0, x: 16 }} animate={{ opacity: 1, x: 0 }} className="min-h-full bg-slate-50">
-        <ScreenHeader title={`${historyContact.name} 的通话历史`} subtitle="纪要、原文与译文记录" onBack={closeContactHistory} />
+        <ScreenHeader title="通话记录详情" subtitle={`${selectedHistory.participantName} · ${selectedHistory.time}`} onBack={closeCallHistory} />
 
-        <div className="p-4 space-y-3 pb-24">
-          {historySessions.length > 0 ? historySessions.map((session) => {
-            const isOpen = expandedHistoryId === session.id;
+        <div className="space-y-3 p-4 pb-24">
+          <section className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
+            <p className="text-sm font-semibold text-gray-950">{selectedHistory.title}</p>
+            <p className="mt-1 text-xs text-gray-500">{selectedHistory.channel} · {selectedHistory.transcript.length} 条原文记录</p>
+            <div className="mt-4 rounded-2xl bg-blue-50 p-3">
+              <h3 className="text-xs font-semibold text-blue-700">纪要</h3>
+              <p className="mt-2 text-sm leading-6 text-blue-900">{selectedHistory.summary}</p>
+            </div>
+          </section>
+
+          {selectedHistory.transcript.map((turn, index) => {
+            const key = historyTurnKey(selectedHistory.id, index);
+            const translatedText = historyCorrections[key] ?? turn.translated;
+            const isEditing = editingHistoryKey === key;
 
             return (
-              <article key={session.id} className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm">
-                <button
-                  type="button"
-                  onClick={() => setExpandedHistoryId((current) => current === session.id ? '' : session.id)}
-                  aria-expanded={isOpen}
-                  className="min-h-16 w-full px-4 py-3 text-left active:bg-gray-50 transition-colors"
-                >
-                  <span className="flex items-start justify-between gap-3">
-                    <span className="min-w-0">
-                      <span className="block text-sm font-semibold text-gray-950">{session.title}</span>
-                      <span className="mt-1 block text-xs text-gray-500">{session.time} · {session.transcript.length} 条原文记录</span>
-                    </span>
-                    <ChevronDown className={cn('mt-1 h-4 w-4 shrink-0 text-gray-400 transition-transform', isOpen && 'rotate-180')} />
-                  </span>
-                  <span className="mt-3 block text-sm leading-6 text-gray-600">{session.summary}</span>
-                </button>
+              <section key={key} className="rounded-2xl border border-gray-200 bg-white p-3 shadow-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="min-w-0 truncate text-xs font-semibold text-gray-500">{turn.speaker}</p>
+                  <p className="shrink-0 text-[11px] font-medium text-gray-400">#{index + 1}</p>
+                </div>
+                <p className="mt-2 text-sm leading-6 text-gray-800">原文：{turn.source}</p>
 
-                {isOpen && (
-                  <div className="space-y-3 border-t border-gray-100 bg-gray-50 p-3">
-                    <section className="rounded-2xl bg-white p-3">
-                      <h3 className="text-xs font-semibold text-gray-500">纪要</h3>
-                      <p className="mt-2 text-sm leading-6 text-gray-800">{session.summary}</p>
-                    </section>
-
-                    {session.transcript.map((turn, index) => {
-                      const key = historyTurnKey(session.id, index);
-                      const translatedText = historyCorrections[key] ?? turn.translated;
-                      const isEditing = editingHistoryKey === key;
-
-                      return (
-                        <section key={key} className="rounded-2xl bg-white p-3">
-                          <div className="flex items-center justify-between gap-3">
-                            <p className="min-w-0 truncate text-xs font-semibold text-gray-500">{turn.speaker}</p>
-                            <p className="shrink-0 text-[11px] font-medium text-gray-400">#{index + 1}</p>
-                          </div>
-                          <p className="mt-2 text-sm leading-6 text-gray-800">原文：{turn.source}</p>
-
-                          {isEditing ? (
-                            <div className="mt-2 space-y-2 rounded-2xl bg-blue-50 p-2">
-                              <textarea
-                                value={historyTranslationDraft}
-                                onChange={(event) => setHistoryTranslationDraft(event.target.value)}
-                                className="min-h-24 w-full resize-none rounded-xl border border-blue-100 bg-white p-3 text-sm leading-6 text-blue-900 outline-none focus:ring-2 focus:ring-blue-200"
-                                autoFocus
-                              />
-                              <div className="flex justify-end gap-2">
-                                <button type="button" onClick={cancelHistoryCorrection} className="min-h-9 rounded-xl px-3 text-xs font-semibold text-gray-500 active:bg-white">
-                                  取消
-                                </button>
-                                <button type="button" onClick={() => saveHistoryCorrection(session.id, index)} className="min-h-9 rounded-xl bg-blue-600 px-3 text-xs font-semibold text-white active:bg-blue-700">
-                                  保存订正
-                                </button>
-                              </div>
-                            </div>
-                          ) : (
-                            <div className="mt-2 rounded-2xl bg-blue-50 p-3 text-sm leading-6 text-blue-800">
-                              <p>译文：{translatedText}</p>
-                              <div className="mt-2 flex items-center justify-between gap-2">
-                                <p className="text-[11px] font-medium text-emerald-600">{rememberedHistoryKey === key ? '已写入记忆' : ''}</p>
-                                <button
-                                  type="button"
-                                  onClick={() => startHistoryCorrection(session.id, index, translatedText)}
-                                  className="min-h-8 rounded-lg px-2 text-xs font-semibold text-blue-700 active:bg-blue-100"
-                                >
-                                  订正
-                                </button>
-                              </div>
-                            </div>
-                          )}
-                        </section>
-                      );
-                    })}
+                {isEditing ? (
+                  <div className="mt-2 space-y-2 rounded-2xl bg-blue-50 p-2">
+                    <textarea
+                      value={historyTranslationDraft}
+                      onChange={(event) => setHistoryTranslationDraft(event.target.value)}
+                      className="min-h-24 w-full resize-none rounded-xl border border-blue-100 bg-white p-3 text-sm leading-6 text-blue-900 outline-none focus:ring-2 focus:ring-blue-200"
+                      autoFocus
+                    />
+                    <div className="flex justify-end gap-2">
+                      <button type="button" onClick={cancelHistoryCorrection} className="min-h-9 rounded-xl px-3 text-xs font-semibold text-gray-500 active:bg-white">
+                        取消
+                      </button>
+                      <button type="button" onClick={() => saveHistoryCorrection(selectedHistory.id, index)} className="min-h-9 rounded-xl bg-blue-600 px-3 text-xs font-semibold text-white active:bg-blue-700">
+                        保存订正
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mt-2 rounded-2xl bg-blue-50 p-3 text-sm leading-6 text-blue-800">
+                    <p>译文：{translatedText}</p>
+                    <div className="mt-2 flex items-center justify-between gap-2">
+                      <p className="text-[11px] font-medium text-emerald-600">{rememberedHistoryKey === key ? '已写入记忆' : ''}</p>
+                      <button
+                        type="button"
+                        onClick={() => startHistoryCorrection(selectedHistory.id, index, translatedText)}
+                        className="min-h-8 rounded-lg px-2 text-xs font-semibold text-blue-700 active:bg-blue-100"
+                      >
+                        订正
+                      </button>
+                    </div>
                   </div>
                 )}
-              </article>
+              </section>
             );
-          }) : (
-            <section className="rounded-2xl border border-gray-200 bg-white p-5 text-sm leading-6 text-gray-500">
-              暂无通话历史，发起通话后会在这里沉淀纪要、原文和译文记录。
-            </section>
-          )}
-        </div>
-      </motion.div>
-    );
-  }
-
-  if (isAllContactsOpen) {
-    return (
-      <motion.div initial={{ opacity: 0, x: 16 }} animate={{ opacity: 1, x: 0 }} className="min-h-full bg-slate-50">
-        <ScreenHeader title="全部联系人" subtitle={`${displayedContacts.length} 位联系人和网页访客`} onBack={() => setIsAllContactsOpen(false)} />
-
-        <div className="space-y-4 p-4 pb-24">
-          <section className="rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3 text-xs leading-5 text-blue-700">
-            App 联系人可直接发起通话；网页访客可编辑姓名并查看历史记录。
-          </section>
-          {renderContactList(displayedContacts)}
+          })}
         </div>
       </motion.div>
     );
@@ -506,175 +361,14 @@ export function CallsView({ onOpenScreen, onOpenEnterpriseSubscription }: CallsV
         <section className="space-y-3">
           <div className="flex items-center justify-between px-1">
             <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-gray-950">通话记录与联系人</h3>
-              <button
-                type="button"
-                onClick={() => setIsAllContactsOpen(true)}
-                className="mt-1 text-xs font-semibold text-blue-600 active:text-blue-700"
-              >
-                全部联系人
-              </button>
+              <h3 className="text-sm font-semibold text-gray-950">通话记录</h3>
+              <p className="mt-1 text-xs leading-relaxed text-gray-500">查看历史通话的纪要、原文和译文记录。</p>
             </div>
-            <button
-              type="button"
-              onClick={() => {
-                setIsAddContactOpen(true);
-                setAddedContactId('');
-              }}
-              className="min-h-10 text-blue-600 text-sm font-medium flex items-center gap-1"
-            >
-              <UserPlus className="w-4 h-4" />
-              <span>添加</span>
-            </button>
           </div>
-          <p className="px-1 text-xs leading-relaxed text-gray-500">如果通话对象已下载 Knowly App，通话结束后将自动添加为联系人。</p>
 
-          {renderContactList(displayedContacts)}
+          {renderCallHistoryList(callHistoryRecords)}
         </section>
       </div>
-
-      {isAddContactOpen && (
-        <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/40 px-0" role="dialog" aria-modal="true" aria-label="添加联系人">
-          <div className="w-full max-w-md rounded-t-3xl bg-white p-4 shadow-2xl">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h3 className="text-base font-semibold text-gray-950">添加联系人</h3>
-                <p className="mt-1 text-sm leading-relaxed text-gray-500">粘贴对方的 ID，可以自动识别并添加到联系人列表。</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsAddContactOpen(false)}
-                className="min-h-11 min-w-11 -mr-2 -mt-2 rounded-full text-gray-500 hover:bg-gray-100 flex items-center justify-center"
-                aria-label="关闭"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="mt-4 space-y-3">
-              <label className="block space-y-1.5">
-                <span className="text-xs font-medium text-gray-500">对方 ID</span>
-                <input
-                  value={contactIdInput}
-                  onChange={(event) => {
-                    setContactIdInput(event.target.value.toUpperCase());
-                    setAddedContactId('');
-                  }}
-                  placeholder="粘贴通话 ID 或联系人 ID"
-                  className="min-h-12 w-full rounded-xl border border-gray-200 bg-gray-50 px-4 font-mono text-base tracking-wider outline-none focus:border-blue-500 focus:bg-white"
-                />
-              </label>
-
-              {addedContactId && (
-                <div className="flex items-center gap-2 rounded-xl bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-                  <CheckCircle2 className="w-4 h-4 shrink-0" />
-                  已添加联系人，可在列表顶部发起通话。
-                </div>
-              )}
-
-              <button
-                type="button"
-                onClick={autoAddContact}
-                disabled={!contactIdInput.trim()}
-                className="min-h-12 w-full rounded-xl bg-slate-950 text-sm font-semibold text-white disabled:bg-gray-200 disabled:text-gray-400 active:bg-slate-800"
-              >
-                自动添加联系人
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {pendingCallContact && (
-        <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/40 px-0" role="dialog" aria-modal="true" aria-label="确认发起通话">
-          <div className="w-full max-w-md rounded-t-3xl bg-white p-4 shadow-2xl">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h3 className="text-base font-semibold text-gray-950">发起通话</h3>
-                <p className="mt-1 text-sm leading-relaxed text-gray-500">要与 {pendingCallContact.name} 通话吗？请选择语音通话或视频通话。</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setPendingCallContactId('')}
-                className="min-h-11 min-w-11 -mr-2 -mt-2 rounded-full text-gray-500 hover:bg-gray-100 flex items-center justify-center"
-                aria-label="关闭"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="mt-4 grid grid-cols-2 gap-3">
-              <button
-                type="button"
-                onClick={() => startContactCall(pendingCallContact, 'voice')}
-                className="min-h-12 rounded-xl bg-slate-950 px-3 text-sm font-semibold text-white flex items-center justify-center gap-2 active:bg-slate-800"
-              >
-                <Phone className="w-4 h-4" />
-                语音通话
-              </button>
-              <button
-                type="button"
-                onClick={() => startContactCall(pendingCallContact, 'video')}
-                className="min-h-12 rounded-xl border border-gray-200 bg-white px-3 text-sm font-semibold text-gray-900 flex items-center justify-center gap-2 active:bg-gray-50"
-              >
-                <Video className="w-4 h-4" />
-                视频通话
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {editingContactId && (
-        <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/40 px-0" role="dialog" aria-modal="true" aria-label="编辑联系人姓名">
-          <div className="w-full max-w-md rounded-t-3xl bg-white p-4 shadow-2xl">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h3 className="text-base font-semibold text-gray-950">编辑联系人姓名</h3>
-                <p className="mt-1 text-sm leading-relaxed text-gray-500">修改后会在联系人列表和呼叫按钮中展示。</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setEditingContactId('');
-                  setEditingContactName('');
-                }}
-                className="min-h-11 min-w-11 -mr-2 -mt-2 rounded-full text-gray-500 hover:bg-gray-100 flex items-center justify-center"
-                aria-label="关闭"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <form
-              className="mt-4 space-y-4"
-              onSubmit={(event) => {
-                event.preventDefault();
-                saveContactName();
-              }}
-            >
-              <label className="block space-y-1.5">
-                <span className="text-xs font-medium text-gray-500">联系人姓名</span>
-                <input
-                  value={editingContactName}
-                  onChange={(event) => setEditingContactName(event.target.value)}
-                  placeholder="输入联系人姓名"
-                  autoFocus
-                  className="min-h-12 w-full rounded-xl border border-gray-200 bg-gray-50 px-4 text-base outline-none focus:border-blue-500 focus:bg-white"
-                />
-              </label>
-
-              <button
-                type="submit"
-                disabled={!editingContactName.trim()}
-                className="min-h-12 w-full rounded-xl bg-slate-950 text-sm font-semibold text-white disabled:bg-gray-200 disabled:text-gray-400 active:bg-slate-800"
-              >
-                保存姓名
-              </button>
-            </form>
-          </div>
-        </div>
-      )}
     </motion.div>
   );
 }
